@@ -25,7 +25,7 @@ Two readers, picked in Settings (gear) -> "Read photos with":
 | Works on | any device, incl. phone | only the PC running it |
 | Cost | a few cents a scan | free |
 | Accuracy | best | good; misreads some multi-buy and weighed lines |
-| Setup | API key from https://console.anthropic.com (set a spend limit) | run `C:\Artificial	ools\llm\start-qwen.cmd` (loads the vision file `--mmproj`) |
+| Setup | API key from https://console.anthropic.com (set a spend limit) | run `C:\Artificial\tools\llm\start-qwen.cmd` (loads the vision file `--mmproj`) |
 
 The API key stays on your device and is sent only to Anthropic. Qwen photos never leave the PC.
 The first time the hosted page calls Qwen, the browser may ask to allow access to devices on your local network: allow it.
