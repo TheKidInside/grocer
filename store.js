@@ -23,7 +23,7 @@ function empty() {
     purchases: [],  // shopping trips (receipt scans + manual entries)
     extras: [],     // one-off shopping list entries
     checked: {},    // shopping-list ticks, keyed 'item:<id>' / 'extra:<id>'
-    settings: { apiKey: '', currency: guessCurrency(), theme: 'system' },
+    settings: { apiKey: '', provider: 'anthropic', localUrl: 'http://127.0.0.1:8080', currency: guessCurrency(), theme: 'system' },
   };
 }
 

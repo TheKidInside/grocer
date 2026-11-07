@@ -304,24 +304,31 @@ async function copyList() {
 
 function viewScan() {
   if (ui.scan) return scanPanel();
-  const noKey = !state.settings.apiKey;
+  const local = state.settings.provider === 'local';
   const card = (kind, title, text) => `<div class="card scan-card">
     <h2>${title}</h2><p class="muted">${text}</p>
     <div class="btn-row">
       <button class="btn primary" data-act="pick" data-kind="${kind}" data-camera="1">Take photo</button>
       <button class="btn" data-act="pick" data-kind="${kind}">Choose photos</button>
     </div></div>`;
-  return `${noKey ? '<div class="notice">Photo reading needs an Anthropic API key. <a href="#" data-act="settings">Add it in Settings</a>.</div>' : ''}
+  const notice = local
+    ? `<div class="notice">Reading photos with Qwen on this PC (${esc(state.settings.localUrl)}). Start <b>start-qwen</b> first. <a href="#" data-act="settings">Change</a></div>`
+    : readerReady() ? '' : '<div class="notice">Photo reading needs an Anthropic API key, or switch to Qwen on this PC. <a href="#" data-act="settings">Open Settings</a>.</div>';
+  return `${notice}
     <div class="scan-cards">
       ${card('receipt', 'Receipt', 'Snap your receipt after shopping. Larder reads each line, restocks the pantry and logs what you spent. Long receipt? Photograph it in parts and choose all the photos together.')}
       ${card('items', 'Groceries', 'Photograph items on the bench, in the fridge or on a shelf. Larder names them, counts them and reads sizes and best-before dates.')}
     </div>
-    <p class="small muted">Photos are read by Anthropic's Claude using your own API key, about a few cents per scan. Nothing is kept on any server.</p>`;
+    <p class="small muted">${local
+    ? 'Photos are read by Qwen running on your own PC: free and private, but only from this computer.'
+    : "Photos are read by Anthropic's Claude using your own API key, about a few cents per scan. Nothing is kept on any server."}</p>`;
 }
 
+const readerReady = () => (state.settings.provider === 'local' ? !!state.settings.localUrl : !!state.settings.apiKey);
+
 function pickPhotos(kind, camera) {
-  if (!state.settings.apiKey) {
-    toast('Add your Anthropic API key first');
+  if (!readerReady()) {
+    toast(state.settings.provider === 'local' ? 'Set the Qwen server address first' : 'Add your Anthropic API key first');
     openSettings();
     return;
   }
@@ -354,8 +361,8 @@ async function startScan(kind, files) {
     ui.scan.previews = images.map((i) => i.preview);
     if (tab === 'scan') render();
     const raw = kind === 'receipt'
-      ? await ai.readReceipt(state.settings.apiKey, images, state.items)
-      : await ai.readItems(state.settings.apiKey, images, state.items);
+      ? await ai.readReceipt(state.settings, images, state.items)
+      : await ai.readItems(state.settings, images, state.items);
     if (ui.scan?.token !== token) return;
     ui.scan.data = kind === 'receipt' ? normalizeReceipt(raw) : normalizeItems(raw);
     ui.scan.phase = 'review';
@@ -375,6 +382,15 @@ async function startScan(kind, files) {
 const validId = (id) => (id && findItem(id) ? id : '');
 const pick = (list, v, fallback) => (list.includes(v) ? v : fallback);
 
+// Quantity + unit for a review line: matched lines use the pantry item's unit,
+// and countable units (pcs, packs, cans) are whole numbers (3.4 bananas -> 3).
+function qtyUnit(l, match) {
+  const unit = match ? findItem(match).unit : pick(UNITS, l.unit, 'pcs');
+  let qty = S.num(l.qty) > 0 ? S.round(S.num(l.qty)) : 1;
+  if (S.stepOf(unit) === 1) qty = Math.max(1, Math.round(qty));
+  return { qty, unit };
+}
+
 function normalizeReceipt(r) {
   return {
     store: String(r.store || '').trim(),
@@ -387,8 +403,7 @@ function normalizeReceipt(r) {
         receiptText: String(l.receipt_text || ''),
         name: String(l.name || l.receipt_text || 'Item').trim(),
         category: pick(CATEGORIES, l.category, 'Other'),
-        qty: S.num(l.qty) > 0 ? S.round(S.num(l.qty)) : 1,
-        unit: match ? findItem(match).unit : pick(UNITS, l.unit, 'pcs'),
+        ...qtyUnit(l, match),
         lineTotal: S.round(S.num(l.line_total), 2),
         match,
       };
@@ -408,8 +423,7 @@ function normalizeItems(r) {
         notes: [l.brand, l.size].filter(Boolean).join(', '),
         category,
         location: pick(LOCATIONS, l.location, S.defaultLocation(category)),
-        qty: S.num(l.qty) > 0 ? S.round(S.num(l.qty)) : 1,
-        unit: match ? findItem(match).unit : pick(UNITS, l.unit, 'pcs'),
+        ...qtyUnit(l, match),
         expires: S.validDate(l.expires),
         match,
       };
@@ -759,9 +773,17 @@ function openSettings() {
   const st = state.settings;
   openModal(`<h2>Settings</h2>
     <div class="stack">
+      <label class="field">Read photos with
+        <select name="provider">
+          <option value="anthropic"${st.provider === 'local' ? '' : ' selected'}>Claude (Anthropic) - works on any device, a few cents a scan</option>
+          <option value="local"${st.provider === 'local' ? ' selected' : ''}>Qwen on this PC - free, only on the PC running it</option>
+        </select></label>
       <label class="field">Anthropic API key
         <input type="password" name="apiKey" value="${esc(st.apiKey)}" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
-        <div class="hint">Used only to read photos. Stored on this device only and sent straight to Anthropic. Get one at console.anthropic.com.</div></label>
+        <div class="hint">For Claude. Stored on this device only and sent straight to Anthropic. Get one at console.anthropic.com.</div></label>
+      <label class="field">Qwen server address
+        <input type="text" name="localUrl" value="${esc(st.localUrl)}" placeholder="http://127.0.0.1:8080" autocomplete="off" spellcheck="false">
+        <div class="hint">For Qwen: the llama.cpp server started by start-qwen (needs its vision file).</div></label>
       <label class="field">Currency<select name="currency">${options(CURRENCIES, st.currency)}</select></label>
       <div class="field">Theme<div style="margin-top:4px" class="seg" role="group" aria-label="Theme">
         ${['system', 'light', 'dark'].map((t) => `<button type="button" data-act="theme" data-theme="${t}" aria-pressed="${st.theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}
@@ -775,6 +797,8 @@ function openSettings() {
     </div>
     <div class="btn-row"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-close>Cancel</button></div>`, (fd) => {
     state.settings.apiKey = String(fd.get('apiKey') || '').trim();
+    state.settings.provider = fd.get('provider') === 'local' ? 'local' : 'anthropic';
+    state.settings.localUrl = String(fd.get('localUrl') || '').trim() || 'http://127.0.0.1:8080';
     state.settings.currency = fd.get('currency');
     commit();
     render();

@@ -169,9 +169,19 @@ dev on `localhost` always gets fresh files.
   matches the schema - no "please answer in JSON" prompt hacks.
 - The prompt includes the pantry as `id | name | unit | category` lines, so
   Claude can set `match_id` and express quantities in *your* unit.
-- `call` uses `claude-opus-5-5` with server-side refusal fallback enabled; if the
-  API ever rejects the beta field, it retries once without it. Errors are mapped
-  to plain-English messages in `toAIError`.
+- `call` picks the reader from Settings:
+  - `callClaude` uses `claude-opus-5-5` with server-side refusal fallback
+    enabled; if the API ever rejects the beta field, it retries once without it.
+    The SDK is imported only on this path. Errors are mapped to plain-English
+    messages in `toAIError`.
+  - `callLocal` posts to a llama.cpp server's OpenAI-style
+    `/v1/chat/completions` (Qwen3.5-9B with its vision file). The photo goes in
+    as an `image_url` data URL and the same schema goes in `response_format`;
+    llama.cpp compiles it into a grammar, so the model can only emit valid JSON.
+    Same contract, different engine: the rest of the app can't tell which
+    reader answered.
+- `qtyUnit` (in app.js) rounds countable units to whole numbers, because a small
+  model will happily say "3.4 bananas".
 
 ---
 

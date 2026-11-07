@@ -6,6 +6,8 @@ receipt / item list, so the test is free and repeatable.
 Usage:  py -3 tests\\e2e.py [base_url] [screenshot_dir]
         (serve the app first: start.cmd, or py -3 -m http.server 8790)
 """
+import base64
+import json
 import sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -194,6 +196,37 @@ with sync_playwright() as p:
     page.locator(".tabs button[data-tab=spend]").click()
     page.locator(".tabs button[data-tab=list]").click()
     check(page.evaluate("window.__xss") is None, "hostile id does not execute")
+
+    # Qwen reader: the REAL ai.js talking to a fake OpenAI-compatible server
+    qpage = browser.new_page(viewport={"width": 390, "height": 844}, service_workers="block")
+    qpage.on("pageerror", lambda e: errors.append(str(e)))
+    sent = {}
+    def fake_qwen(route):
+        sent["body"] = route.request.post_data_json
+        content = json.dumps({"store": "Qwen Mart", "date": "2026-11-05", "total": 9.5, "lines": [
+            {"receipt_text": "TIN TOM 2 @ 2.50", "name": "Tinned tomatoes", "category": "Pantry", "qty": 2.4, "unit": "can",
+             "line_total": 5, "match_id": "", "skip": False},
+            {"receipt_text": "BAG", "name": "Bag", "category": "Other", "qty": 1, "unit": "bag", "line_total": 0.15, "match_id": "", "skip": True}]})
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": content}}]}))
+    qpage.route("http://127.0.0.1:9/v1/chat/completions", fake_qwen)
+    qpage.goto(BASE)
+    qpage.locator("#open-settings").click()
+    qpage.select_option("select[name=provider]", "local")
+    qpage.fill("input[name=localUrl]", "http://127.0.0.1:9/v1/")
+    qpage.locator("#modal-body").get_by_role("button", name="Save").click()
+    qpage.locator(".tabs button[data-tab=scan]").click()
+    check(qpage.get_by_text("Reading photos with Qwen").is_visible(), "Qwen notice on scan tab")
+    png = qpage.evaluate("(() => { const c = document.createElement('canvas'); c.width = 40; c.height = 60; return c.toDataURL('image/png').split(',')[1]; })()")
+    with qpage.expect_file_chooser() as fc:
+        qpage.get_by_role("button", name="Choose photos").first.click()
+    fc.value.set_files({"name": "r.png", "mimeType": "image/png", "buffer": base64.b64decode(png)})
+    qpage.get_by_text("Check the receipt").wait_for()
+    body = sent["body"]
+    check(body["response_format"]["type"] == "json_schema" and body["messages"][0]["content"][0]["type"] == "image_url",
+          "Qwen request carries the photo and the JSON schema")
+    check(qpage.locator("[data-field=qty]").first.input_value() == "2", "countable qty rounded (2.4 cans -> 2)")
+    check(qpage.locator("[data-head=store]").input_value() == "Qwen Mart", "Qwen result reaches the review screen")
 
     browser.close()
 

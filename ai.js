@@ -1,10 +1,11 @@
-// Photo reading: shrinks a photo in the browser, sends it to Claude with a
-// JSON schema, and returns the structured result. Loaded on demand so the
-// rest of the app works offline.
+// Photo reading: shrinks a photo in the browser, sends it with a JSON schema to
+// the chosen reader (Claude via Anthropic, or Qwen on a local llama.cpp server),
+// and returns the structured result. Loaded on demand so the rest of the app
+// works offline.
 
-import Anthropic from 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.3.0/+esm';
 import { CATEGORIES, UNITS, LOCATIONS } from './store.js';
 
+const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.3.0/+esm';
 const MODEL = 'claude-opus-5-5';
 const MAX_EDGE = 1568; // Claude downsizes anything larger, so don't upload it
 
@@ -99,23 +100,24 @@ const ITEMS_SCHEMA = obj({
   },
 });
 
-export async function readReceipt(apiKey, images, items) {
+export async function readReceipt(settings, images, items) {
   const prompt = `These photos show one grocery receipt (several photos = consecutive parts of a long receipt).
 Extract every purchased line.
 
 Rules:
 - name: a short, generic product name a person would use on a shopping list ("Bananas", "Greek yoghurt"), not the store's abbreviation.
-- qty and unit: what was bought. Weighed items use kg/g. Multi-buys ("3 @ 1.20") give qty 3.
-- If a line matches an item already in the pantry below, set match_id to its id and express qty in that item's unit (e.g. a 2 L milk bottle against a pantry item measured in L is qty 2).
-- skip = true for discounts, loyalty savings, bag charges, deposits, rounding, tax summaries, and anything that is not a product.
+- qty and unit: what was bought. Weighed items use kg/g.
+- A quantity line printed under a product belongs to that product: "2 @ $2.50" means qty 2, "0.856 kg @ $3.90/kg" means qty 0.856 kg.
+- If a line matches an item already in the pantry below, set match_id to its id and express qty in that item's unit (e.g. a 2 L milk bottle against a pantry item measured in L is qty 2). If the units differ in kind (kg bought, pantry counts pcs), estimate the count (about 6 bananas per kg).
+- skip = true for discounts, loyalty savings, bags of any kind (including reusable bags), deposits, rounding, tax summaries, and anything that is not food or a household product.
 - total is the final amount paid. If a value is unreadable, make your best estimate from the other numbers.
 
 Pantry (id | name | unit | category):
 ${pantryIndex(items)}`;
-  return call(apiKey, images, prompt, RECEIPT_SCHEMA);
+  return call(settings, images, prompt, RECEIPT_SCHEMA);
 }
 
-export async function readItems(apiKey, images, items) {
+export async function readItems(settings, images, items) {
   const prompt = `These photos show groceries (on a bench, in a fridge, or on a shelf). List each distinct product you can identify.
 
 Rules:
@@ -127,11 +129,71 @@ Rules:
 
 Pantry (id | name | unit | category):
 ${pantryIndex(items)}`;
-  return call(apiKey, images, prompt, ITEMS_SCHEMA);
+  return call(settings, images, prompt, ITEMS_SCHEMA);
 }
 
-async function call(apiKey, images, prompt, schema) {
+function call(settings, images, prompt, schema) {
+  return settings.provider === 'local'
+    ? callLocal(settings.localUrl, images, prompt, schema)
+    : callClaude(settings.apiKey, images, prompt, schema);
+}
+
+function parseJson(text, who) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new AIError(`${who} returned something unreadable. Please try again.`);
+  }
+}
+
+// ---------- Qwen on a local llama.cpp server (OpenAI-compatible API) ----------
+
+async function callLocal(url, images, prompt, schema) {
+  const base = String(url || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+  if (!base) throw new AIError('Set the Qwen server address in Settings (e.g. http://127.0.0.1:8080).');
+  let res;
+  try {
+    res = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{
+          role: 'user',
+          content: [...images.map((i) => ({ type: 'image_url', image_url: { url: i.preview } })), { type: 'text', text: prompt }],
+        }],
+        // llama.cpp turns the schema into a grammar, so the reply always parses.
+        response_format: { type: 'json_schema', json_schema: { name: 'result', strict: true, schema } },
+        chat_template_kwargs: { enable_thinking: false },
+        temperature: 0.1,
+        max_tokens: 8192,
+      }),
+    });
+  } catch {
+    throw new AIError(`Could not reach Qwen at ${base}. Is start-qwen running on this PC? (A phone can't reach it.)`);
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    if (/image|mmproj|multimodal/i.test(body)) {
+      throw new AIError('This Qwen server cannot see images. Start it with the vision file (--mmproj); see the README.');
+    }
+    throw new AIError(`Qwen server error (${res.status}): ${body.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  const choice = data.choices?.[0];
+  if (choice?.finish_reason === 'length') throw new AIError('The receipt was too long for Qwen in one go. Try splitting it into two scans.');
+  return parseJson(choice?.message?.content || '', 'Qwen');
+}
+
+// ---------- Claude via the Anthropic API ----------
+
+async function callClaude(apiKey, images, prompt, schema) {
   if (!apiKey) throw new AIError('Add your Anthropic API key in Settings to scan photos.');
+  let Anthropic;
+  try {
+    ({ default: Anthropic } = await import(SDK_URL));
+  } catch {
+    throw new AIError('Could not load the Anthropic library. Check your internet connection.');
+  }
   const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 2 });
   const base = {
     model: MODEL,
@@ -150,20 +212,15 @@ async function call(apiKey, images, prompt, schema) {
       res = await client.messages.create(base);
     }
   } catch (err) {
-    throw toAIError(err);
+    throw toAIError(Anthropic, err);
   }
 
   if (res.stop_reason === 'refusal') throw new AIError('Claude declined to read this photo. Try a clearer shot.');
   if (res.stop_reason === 'max_tokens') throw new AIError('The receipt was too long to read in one go. Try splitting it into two scans.');
-  const text = res.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new AIError('Claude returned something unreadable. Please try again.');
-  }
+  return parseJson(res.content.filter((b) => b.type === 'text').map((b) => b.text).join(''), 'Claude');
 }
 
-function toAIError(err) {
+function toAIError(Anthropic, err) {
   if (err instanceof Anthropic.AuthenticationError) return new AIError('Your API key was rejected. Check it in Settings.');
   if (err instanceof Anthropic.PermissionDeniedError) return new AIError('This API key is not allowed to use that model.');
   if (err instanceof Anthropic.RateLimitError) return new AIError('Too many requests right now. Wait a minute and try again.');
