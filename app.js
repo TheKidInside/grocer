@@ -375,13 +375,13 @@ async function startScan(kind, files) {
     let raw;
     if (onDevice) {
       const ocr = await import('./ocr.js');
-      const text = await ocr.readReceiptText(images, (f) => {
+      const texts = await ocr.readReceiptText(images, (f) => {
         const el = document.getElementById('scan-progress');
         if (el) el.textContent = `Reading the text... ${Math.round(f * 100)}%`;
       });
       if (ui.scan?.token !== token) return;
-      ui.scan.ocrText = text;
-      raw = ocr.parseReceiptText(text, { dayFirst: state.settings.currency !== 'USD', match: matchReceiptLine });
+      ui.scan.ocrText = texts.join('\n\n--- next photo ---\n\n');
+      raw = ocr.parseReceiptPhotos(texts, { dayFirst: state.settings.currency !== 'USD', match: matchReceiptLine });
     } else {
       raw = kind === 'receipt'
         ? await ai.readReceipt(state.settings, images, state.items)
@@ -420,9 +420,11 @@ function normalizeReceipt(r) {
     store: String(r.store || '').trim(),
     date: S.validDate(r.date) || S.today(),
     total: S.round(S.num(r.total), 2),
+    itemsCount: Number.isInteger(r.itemsCount) ? r.itemsCount : null,
+    totalGuessed: !!r.totalGuessed,
     lines: (r.lines || []).map((l) => {
       // A line you saved on an earlier receipt wins over any reader's guess.
-      const learned = l.skip ? '' : learnedItem(l.receipt_text);
+      const learned = l.skip ? '' : validId(state.barcodes[l.barcode]) || learnedItem(l.receipt_text);
       const match = learned || validId(l.match_id);
       // The reader expressed qty for its own match; re-express it for the learned item.
       let line = l;
@@ -439,6 +441,8 @@ function normalizeReceipt(r) {
         lineTotal: S.round(S.num(l.line_total), 2),
         match,
         guess: !learned && !!l.guess && !!match,
+        check: !!l.check,
+        barcode: /^\d{8,14}$/.test(l.barcode || '') ? l.barcode : '',
       };
     }),
   };
@@ -506,7 +510,7 @@ function receiptReview(s, thumbs) {
           <input type="checkbox" class="check" data-line="${i}" data-field="include" aria-label="Add to pantry"${l.include ? ' checked' : ''}>
           <input type="text" data-line="${i}" data-field="name" value="${esc(l.name)}" aria-label="Name" autocomplete="off">
         </div>
-        ${l.receiptText ? `<div class="receipt-text">${esc(l.receiptText)}${l.guess ? ' <span class="pill low">matched by name - check</span>' : ''}</div>` : ''}
+        ${l.receiptText ? `<div class="receipt-text">${esc(l.receiptText)}${l.guess ? ' <span class="pill low">matched by name - check</span>' : ''}${l.check ? ' <span class="pill low">check price</span>' : ''}</div>` : ''}
         <div class="review-grid four">
           <label class="field">Qty<input type="number" step="any" min="0" inputmode="decimal" data-line="${i}" data-field="qty" value="${l.qty}"></label>
           <label class="field">Unit<select data-line="${i}" data-field="unit">${options(UNITS, l.unit)}</select></label>
@@ -527,10 +531,20 @@ function receiptReview(s, thumbs) {
 
 function receiptTotals(d) {
   const lines = sum(d.lines.filter((l) => l.include), (l) => l.lineTotal);
+  const all = sum(d.lines, (l) => l.lineTotal);
   const other = S.round(d.total - lines, 2);
+  const gap = S.round(d.total - all, 2);
+  const count = sum(d.lines.filter((l) => !l.skip && l.lineTotal > 0), (l) => l.qty);
+  const warn = [];
+  if (d.totalGuessed) warn.push("The receipt's total couldn't be read, so Total is what the lines add up to. Type the real total above.");
+  if (Math.abs(gap) >= 0.01 && d.total > 0) {
+    warn.push(`The lines add up to ${money(all)}, ${money(Math.abs(gap))} ${gap > 0 ? 'short of' : 'over'} the receipt total: a line may be missing or misread. Lines marked "check price" are the likeliest.`);
+  }
+  if (d.itemsCount && Math.round(count) !== d.itemsCount) warn.push(`The receipt says ${d.itemsCount} items; ${Math.round(count)} were found.`);
   return `<div class="totals"><span>Ticked lines <b class="money">${money(lines)}</b></span>
     <span>Other / adjustments <b class="money">${money(other)}</b></span>
-    <span>Total <b class="money">${money(d.total)}</b></span></div>`;
+    <span>Total <b class="money">${money(d.total)}</b></span></div>
+    ${warn.length ? `<p class="hint">${warn.map(esc).join(' ')}</p>` : ''}`;
 }
 
 function itemsReview(s, thumbs) {
@@ -575,6 +589,7 @@ function onScanField(el) {
   if (el.dataset.head) {
     const k = el.dataset.head;
     d[k] = k === 'total' ? S.round(S.num(el.value), 2) : el.value;
+    if (k === 'total') d.totalGuessed = false;
   } else {
     const line = d.lines[Number(el.dataset.line)];
     const f = el.dataset.field;
@@ -632,7 +647,8 @@ function applyScan() {
       item.updatedAt = Date.now();
       if (qty > 0) S.recordPrice(item, l.lineTotal / qty, date, d.store);
       delete state.checked['item:' + item.id];
-      // Learn this line, so the next receipt with it matches automatically.
+      // Learn this line (and its barcode), so the next receipt or scan matches automatically.
+      if (l.barcode) S.remember(state.barcodes, l.barcode, item.id, 2000);
       const key = S.aliasKey(l.receiptText);
       S.remember(state.aliases, key, item.id);
       purchaseLines.push({ name: item.name, itemId: item.id, category: item.category, qty, unit: item.unit, lineTotal: l.lineTotal });
@@ -723,8 +739,8 @@ function learnedItem(receiptText) {
 }
 
 // Used by the on-device receipt reader: learned lines first, then names.
-function matchReceiptLine(name, receiptText) {
-  const learned = findItem(learnedItem(receiptText));
+function matchReceiptLine(name, receiptText, barcode) {
+  const learned = findItem(state.barcodes[barcode]) || findItem(learnedItem(receiptText));
   if (learned) return { id: learned.id, unit: learned.unit };
   const it = bestNameMatch(name);
   return it ? { id: it.id, unit: it.unit, guess: true } : null;

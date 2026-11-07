@@ -19,8 +19,9 @@ JS = """async ({ img, psm, prep }) => {
   const blob = await (await fetch('data:image/jpeg;base64,' + img)).blob();
   const image = await ai.prepareImage(new File([blob], 'r.jpg', { type: 'image/jpeg' }), prep ? 3200 : 2400, { forText: prep });
   const t0 = performance.now();
-  const text = await ocr.readReceiptText([image], null, psm);
-  const parsed = ocr.parseReceiptText(text, {});
+  const texts = await ocr.readReceiptText([image], null);
+  const text = texts.join(String.fromCharCode(10));
+  const parsed = ocr.parseReceiptPhotos(texts, {});
   return { ms: Math.round(performance.now() - t0), total: parsed.total, lines: parsed.lines.map(l => [l.name, l.line_total]), text };
 }"""
 
@@ -31,7 +32,7 @@ with sync_playwright() as p:
     for name in ["receipt", "hard_receipt"]:
         img = base64.b64encode((FIX / f"{name}.jpg").read_bytes()).decode()
         truth = json.loads((FIX / f"{name}.json").read_text()) if (FIX / f"{name}.json").exists() else None
-        for psm in [None, "6", "11"]:
+        for psm in [None]:
             for prep in [False, True]:
                 r = page.evaluate(JS, {"img": img, "psm": psm, "prep": prep})
                 score = ""

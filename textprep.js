@@ -4,11 +4,89 @@
 //      neighbourhood, so shadows, uneven light and grey thermal print all work.
 // Pure canvas maths, no libraries.
 
-// canvas (any size) -> new canvas, straightened and black/white.
+// canvas (any size) -> new canvas: cropped to the paper, sized so letters are
+// ~40px tall, straightened and black/white.
 export function cleanForText(src) {
-  const angle = findSkew(src);
-  const rotated = rotate(src, angle);
-  return binarize(rotated);
+  // 1. loose crop (wide margins: a tilted receipt's edge drifts sideways),
+  // 2. measure the tilt on the paper alone (a brushed-steel table looks like text lines),
+  // 3. straighten, then crop tightly and clean up.
+  const loose = cropToPaper(src, 0.1);
+  const straight = rotate(loose, findSkew(loose));
+  return binarize(scaleForText(cropToPaper(straight, 0.02)));
+}
+
+// Receipts are narrow strips photographed on a table: scale the paper to
+// ~1400px wide (thermal print is ~32 characters across), capped at 12 MP.
+function scaleForText(src) {
+  let scale = 1400 / src.width;
+  scale = Math.min(scale, Math.sqrt(12e6 / (src.width * src.height)));
+  if (Math.abs(scale - 1) < 0.05) return src;
+  const c = document.createElement('canvas');
+  c.width = Math.round(src.width * scale);
+  c.height = Math.round(src.height * scale);
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+
+// Keep only the receipt's columns: the longest run of columns that are mostly
+// paper-bright. The table and fingers beside the paper become junk characters
+// around every line once the image is black/white, so they're cut off first.
+function cropToPaper(src, margin) {
+  const scale = Math.min(1, 320 / src.width);
+  const w = Math.max(1, Math.round(src.width * scale));
+  const h = Math.max(1, Math.round(src.height * scale));
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(src, 0, 0, w, h);
+  const g = greyOf(ctx, w, h);
+  const sorted = Array.from(g).sort((a, b) => a - b);
+  const paper = sorted[Math.floor(sorted.length * 0.97)];
+  const table = sorted[Math.floor(sorted.length * 0.3)];
+  if (paper - table < 30) return src; // no paper/table contrast
+  const bright = paper - 35;            // columns: clearly paper
+
+  const run = (n, frac, gap) => {
+    let best = [0, n - 1];
+    let bestLen = 0;
+    let start = -1;
+    let miss = 0;
+    for (let i = 0; i <= n; i++) {
+      const on = i < n && frac(i);
+      if (on) { if (start < 0) start = i; miss = 0; } else if (start >= 0 && ++miss > gap) {
+        const end = i - miss;
+        if (end - start > bestLen) { bestLen = end - start; best = [start, end]; }
+        start = -1;
+        miss = 0;
+      }
+    }
+    if (start >= 0 && n - start > bestLen) best = [start, n - 1];
+    return best;
+  };
+  // a column is paper if it is bright for at least 15% of its height (a hand can cover the rest)
+  const colFrac = (x) => { let k = 0; for (let y = 0; y < h; y++) if (g[y * w + x] >= bright) k++; return k / h > 0.15; };
+  const [x0, x1] = run(w, colFrac, Math.round(w * 0.02));
+  // Rows are left alone: cutting them risks losing a shaded end of the receipt
+  // (and its total), while table above/below the paper holds no prices.
+  const y0 = 0;
+  const y1 = h - 1;
+
+  const mx = Math.round((x1 - x0) * margin);
+  const my = 0;
+  const cx0 = Math.max(0, x0 - mx) / scale;
+  const cy0 = Math.max(0, y0 - my) / scale;
+  const cw = (Math.min(w - 1, x1 + mx) + 1) / scale - cx0;
+  const ch = (Math.min(h - 1, y1 + my) + 1) / scale - cy0;
+  const area = (cw * ch) / (src.width * src.height);
+  if (cw < src.width * 0.15 || area < 0.08 || area > 0.92) return src; // not confident: leave as is
+  const out = document.createElement('canvas');
+  out.width = Math.round(cw);
+  out.height = Math.round(ch);
+  out.getContext('2d').drawImage(src, cx0, cy0, cw, ch, 0, 0, out.width, out.height);
+  return out;
 }
 
 function greyOf(ctx, w, h) {
@@ -61,7 +139,7 @@ function rotate(src, deg) {
   c.width = nw;
   c.height = nh;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#fff';
+  ctx.fillStyle = '#000'; // never mistaken for paper by cropToPaper
   ctx.fillRect(0, 0, nw, nh);
   ctx.translate(nw / 2, nh / 2);
   ctx.rotate(-t);
@@ -102,7 +180,7 @@ function binarize(src) {
   c.height = h;
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(src, 0, 0);
-  const ink = adaptiveInk(greyOf(ctx, w, h), w, h, Math.max(10, Math.round(w / 40)), 0.88);
+  const ink = adaptiveInk(greyOf(ctx, w, h), w, h, Math.max(10, Math.round(w / 40)), 0.92);
   const img = ctx.createImageData(w, h);
   for (let i = 0, j = 0; j < ink.length; i += 4, j++) {
     const v = ink[j] ? 0 : 255;

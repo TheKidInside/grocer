@@ -150,12 +150,30 @@ pantry, list and spend views therefore work offline and never download the SDK.
 - `readReceiptText` loads Tesseract.js (an open-source text reader that runs in
   the browser; first use downloads it once) and reads each photo in turn.
 - Before reading, `ai.prepareImage(..., { forText: true })` runs `textprep.js`:
+  a loose crop to the paper's columns, then straighten, then a tight crop (the
+  table and fingers beside the paper otherwise turn into junk characters around
+  every line), then resize so letters are ~40px tall, then black/white.
+  Earlier notes on the black/white step:
   it **straightens** the photo (tries tilts from -12 to +12 degrees and keeps the
   one where text rows line up best) and turns it **black on white** by comparing
   each pixel with its own neighbourhood, which cancels shadows and faint
   thermal print. On the long, tilted, unevenly lit test receipt this took the
   reader from 15 to 28 of 28 prices (`tests/ocr_bench.py` measures it).
-- `mergeTexts` joins photos of a long receipt and drops the overlapping lines.
+- Several photos of one long receipt are read separately, and
+  `parseReceiptPhotos` / `mergeLines` line them up like a text diff on their
+  **sequence of prices** (OCR reads prices more reliably than names). In the
+  overlap the cleaner copy of each line wins, so a finger over a name in one
+  photo is fixed by the next.
+- `reconcile` cross-checks "qty x unit price" against the line total (the same
+  money printed twice) to catch digit slips: "11 x" for "1 x", "$2.50" read as
+  "32.50", weights, ".89" for ".80". Lines it had to guess are marked "check
+  price" on the review screen.
+- The total is the amount the footer repeats (subtotal / amount due / card);
+  one much smaller than the items' sum was misread, so the items' sum is used
+  and the review screen says so. Store layouts covered by tests: AU style
+  ("NAME  3.80", "2 @ $2.50") and Puregold style (barcode + name, then
+  "1 x 148.00  148.00 V"). Real receipt photos for `tests/real_receipt.py` live
+  in `tests/private/`, which is git-ignored (they carry card and store details).
 - `parseReceiptText` is pure rules, so it is unit-tested with plain text:
   - a line ending in a price is an item (`PRICE_END`); OCR's `7:20` is read as 7.20;
   - a quantity line (`2 @ $2.50`, `0.856 kg @ $3.90/kg`) belongs to the name line

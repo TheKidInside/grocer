@@ -37,6 +37,7 @@ with sync_playwright() as p:
     print("camera read:", page.locator("#bc-list").inner_text().strip())
     page.fill("#bc-manual", "4800361339148")
     page.press("#bc-manual", "Enter")
+    page.wait_for_function("document.getElementById('bc-list')?.innerText.includes('4800361339148')", timeout=10000)
     enter_ok = page.locator("#modal").evaluate("d => d.open") and "4800361339148" in page.locator("#bc-list").inner_text()
     print("Enter adds the typed code and keeps the scanner open:", enter_ok)
     page.get_by_role("button", name="Done").click()

@@ -20,7 +20,7 @@ export async function prepareImage(file, maxEdge = MAX_EDGE, { forText = false }
   const w = img.width || img.naturalWidth;
   const h = img.height || img.naturalHeight;
   const fit = maxEdge / Math.max(w, h);
-  const scale = forText ? Math.min(fit, Math.max(1, 1600 / w)) : Math.min(1, fit);
+  const scale = Math.min(1, fit); // forText: textprep.js crops and resizes the paper itself
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(w * scale);
   canvas.height = Math.round(h * scale);

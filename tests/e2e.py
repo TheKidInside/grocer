@@ -262,7 +262,7 @@ GST INCLUDED IN TOTAL 2:22`;
                   ("Eggs Free Range 12pk", 1, "pcs", 7.2, False, ""), ("Tin Tomatoes 400g", 2, "pcs", 5, False, ""),
                   ("Reusable Bag", 1, "pcs", 0.15, True, ""), ("Loyalty Discount", 1, "pcs", -1, True, "")], f"receipt lines {got}")
     extra = dpage.evaluate("""async () => {
-      const { parseReceiptText, mergeTexts } = await import('./ocr.js');
+      const { parseReceiptText, parseReceiptPhotos } = await import('./ocr.js');
       const S = await import('./store.js');
       const r = parseReceiptText(`SHOP
 MILK 3 x 1.50 4.50
@@ -274,18 +274,48 @@ VISA CARD 19.34
 TOTAL (14 ITEMS) 19.34`, {});
       return {
         lines: r.lines.map(l => [l.name, l.qty, l.unit, l.line_total]), total: r.total,
-        merged: mergeTexts([`A 1.00
-B 2.00
-C 3.00`, `B 2.00
-C 3.00
-D 4.00`]),
+        merged: parseReceiptPhotos([`SHOP ONE
+4800361415293 MILO 48G
+1 x 148.00 148.00 V
+A ITEM
+1 x 2.00 2.00 V`, `A ITEM
+1 x 2.00 2.00 V
+B THING
+2 x 3.00 6.00 V
+TOTAL 156.00`]),
+        pure: parseReceiptPhotos([`Puregold Price Club
+Trans. Date: 2026-11-07 13:45:35
+Cashier: CRISTY LYN
+¥ 4800361415293 MILO ACTV-TWIN48GX
+¥ 1 x 148.00 148.90 V k: 5
+4801668605981 DP ADB S-PNNYHNG A
+3 % 38.00 114.00 V
+0748485913018 BIRCHTREE FC29G7+1
+Xk 67.80 67.80 V
+4806502721452 GAR HF W-BREAD400G
+1x 80.25 §0.25 V
+4806505668853 CHEERS TRASH BAGS
+2 x 40.25 80.50 V
+Wototal 9,114.33
+Total Discount 0.00
+Total Amt Due Pnp 9,114.33
+BDO CREDIT 9,114.33`]),
         packs: [S.packQty('380 g', 'g'), S.packQty('6 x 375 mL', 'L'), S.packQty('2 L', 'pcs'), S.packQty('1.5kg', 'g')],
         keys: [S.aliasKey('MILK 1.5L 3.20'), S.aliasKey('MILK 0.6L 1.90'), S.aliasKey('TIN TOM 2 @ $2.50 5.00')],
         choc: S.guessCategory('MILK CHOCOLATE 200G'),
       }; }""")
     check(extra["lines"] == [["Milk", 3, "pcs", 4.5], ["Bananas", 0.856, "kg", 3.34], ["Birthday Card", 1, "pcs", 4.5], ["Cashews 300g", 1, "pcs", 7]]
           and extra["total"] == 19.34, f"parser: '3 x', 'kg NET @', product words like CARD/CASH, TOTAL (n ITEMS) ({extra['lines']}, {extra['total']})")
-    check(extra["merged"] == "A 1.00\nB 2.00\nC 3.00\nD 4.00", "overlapping photos merged without duplicates")
+    m = extra["merged"]
+    check([(l["name"], l["qty"], l["line_total"]) for l in m["lines"]] == [("Milo 48g", 1, 148), ("A Item", 1, 2), ("B Thing", 2, 6)]
+          and m["total"] == 156 and m["lines"][0]["barcode"] == "4800361415293", f"overlapping photos merged, barcode kept ({m['lines']})")
+    got = [(l["name"], l["qty"], l["line_total"], l["skip"]) for l in extra["pure"]["lines"]]
+    check([g[:3] for g in got] == [("Milo Actv-Twin48gx", 1, 148), ("Dp Adb S-Pnnyhng A", 3, 114), ("Birchtree Fc29g7+1", 1, 67.8),
+                                   ("Gar Hf W-Bread400g", 1, 80.25), ("Cheers Trash Bags", 2, 80.5)],
+          f"Puregold layout: code+name line, qty line, VAT flag, stray marks, OCR'd x, digit slips ({got})")
+    check(not got[4][3], "trash bags are an item, not a bag charge")
+    pg = extra["pure"]
+    check(pg["total"] == 9114.33 and pg["date"] == "2026-11-07", f"total despite 'Wototal' + thousands separator ({pg['total']}, {pg['date']})")
     check(extra["packs"] == [380, 2.25, None, 1500], f"pack sizes ({extra['packs']})")
     check(extra["keys"][0] != extra["keys"][1] and extra["keys"][2] == "TIN TOM", f"learned-line keys ({extra['keys']})")
     check(extra["choc"] == "Snacks", "milk chocolate is a snack, not milk")
