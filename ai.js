@@ -5,6 +5,7 @@
 
 import { CATEGORIES, UNITS, LOCATIONS } from './store.js';
 import { cleanForText } from './textprep.js';
+import { RECEIPT_HINT } from './phnames.js';
 
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.3.0/+esm';
 const MODEL = 'claude-opus-5-5';
@@ -78,7 +79,7 @@ const RECEIPT_SCHEMA = obj({
     type: 'array',
     items: obj({
       receipt_text: { type: 'string', description: 'The line exactly as printed' },
-      name: { type: 'string', description: 'Plain generic product name, e.g. "Full cream milk"' },
+      name: { type: 'string', description: 'Brand, product, variant and pack size, e.g. "Alaska Evaporated Milk 370mL"' },
       category: { type: 'string', enum: CATEGORIES },
       qty: { type: 'number', description: 'Quantity in the chosen unit' },
       unit: { type: 'string', enum: UNITS },
@@ -93,7 +94,7 @@ const ITEMS_SCHEMA = obj({
   items: {
     type: 'array',
     items: obj({
-      name: { type: 'string', description: 'Plain generic product name' },
+      name: { type: 'string', description: 'Brand, product, variant and pack size, e.g. "Lucky Me Pancit Canton Chilimansi 60g"' },
       brand: str,
       size: { type: 'string', description: 'Pack size as printed, e.g. "2 L" or "500 g", or empty' },
       category: { type: 'string', enum: CATEGORIES },
@@ -111,7 +112,8 @@ export async function readReceipt(settings, images, items) {
 Extract every purchased line.
 
 Rules:
-- name: a short, generic product name a person would use on a shopping list ("Bananas", "Greek yoghurt"), not the store's abbreviation.
+- name: brand, product, variant and pack size, written out in full rather than the store's abbreviation ("Purefoods Corned Beef 210g", "Downy Fabric Conditioner Garden Bloom 1.4L"). Loose produce has no brand ("Bananas").
+- ${RECEIPT_HINT}
 - qty and unit: what was bought. Weighed items use kg/g.
 - A quantity line printed under a product belongs to that product: "2 @ $2.50" means qty 2, "0.856 kg @ $3.90/kg" means qty 0.856 kg.
 - If a line matches an item already in the pantry below, set match_id to its id and express qty in that item's unit (e.g. a 2 L milk bottle against a pantry item measured in L is qty 2). If the units differ in kind (kg bought, pantry counts pcs), estimate the count (about 6 bananas per kg).
@@ -127,7 +129,7 @@ export async function readItems(settings, images, items) {
   const prompt = `These photos show groceries (on a bench, in a fridge, or on a shelf). List each distinct product you can identify.
 
 Rules:
-- name: short generic name ("Peanut butter"); put the brand in brand and pack size in size.
+- name: brand, product, variant and pack size ("Lady's Choice Peanut Butter Creamy 340g"); also put the brand in brand and pack size in size.
 - qty and unit: count what is visible. Use pcs/pack/bottle/can/box/bag for packaged goods; only use kg/g/L/mL when the product is loose.
 - If a product matches an item already in the pantry below, set match_id to its id and express qty in that item's unit.
 - location: where it is normally stored once put away.

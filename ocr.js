@@ -3,6 +3,7 @@
 // return, so the review screen doesn't care which reader was used.
 
 import { guessCategory, validDate, today, round, convertQty, packQty, daysUntil } from './store.js';
+import { expandName } from './phnames.js';
 
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js';
 
@@ -254,11 +255,15 @@ export function parseReceiptText(text, { dayFirst = true, match = () => null } =
     const skip = lineTotal < 0 || (SKIP_RE.test(name) && !BAG_PRODUCT_RE.test(name));
     if (skip && lineTotal === 0) continue;
     const receiptText = (qtyLine ? `${name} ${label}` : label).trim();
-    const hit = skip ? null : match(name, receiptText, code);
+    // "PF CB 210G" -> "Purefoods Corned Beef 210g" (phnames.js); unknown lines keep the printed name
+    const full = skip ? null : expandName(name);
+    const shown = full ? full.name : titleCase(name);
+    const hit = skip ? null : match(shown, receiptText, code);
     out.push({
       receipt_text: receiptText,
-      name: titleCase(name),
-      category: guessCategory(name),
+      printed: name, // the product as printed, before expansion (mergeLines judges reads by it)
+      name: shown,
+      category: full?.category || guessCategory(shown),
       qty: hit ? fitQty(name, qty, unit, hit.unit) : qty,
       unit: hit ? hit.unit : unit,
       line_total: round(lineTotal, 2),
@@ -314,7 +319,9 @@ export function parseReceiptPhotos(texts, opts = {}) {
 }
 
 const samePrice = (a, b) => Math.abs(a.line_total - b.line_total) < 0.011;
-const quality = (l) => (l.name.match(/[a-z]/gi) || []).length + (l.barcode ? 12 : 0) - (l.check ? 4 : 0);
+// Judged on the product as printed, not the expanded name ("Oishi Salted Egg Chips"
+// is longer than "OKI SLT ECGS" but was read no better).
+const quality = (l) => ((l.printed ?? l.name).match(/[a-z]/gi) || []).length + (l.barcode ? 12 : 0) - (l.check ? 4 : 0);
 
 // prev + next where next's first lines repeat prev's last ones. Like a text
 // diff: find the longest in-order run of equal prices between prev's tail and

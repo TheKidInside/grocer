@@ -2,6 +2,7 @@
 // object. Every change goes through commit(), which saves and refreshes the badge.
 
 import * as S from './store.js';
+import { fullName } from './phnames.js';
 
 const { CATEGORIES, UNITS, LOCATIONS, CURRENCIES } = S;
 
@@ -456,7 +457,7 @@ function normalizeItems(r) {
       const category = pick(CATEGORIES, l.category, 'Other');
       return {
         include: true,
-        name: String(l.name || 'Item').trim(),
+        name: fullName(l.brand, l.name, l.size) || 'Item',
         notes: [l.brand, l.size].filter(Boolean).join(', '),
         category,
         location: pick(LOCATIONS, l.location, S.defaultLocation(category)),
@@ -820,13 +821,14 @@ async function openBarcodeScanner() {
       pending.push(barcodeLib.lookupProduct(code).then((p) => {
         if (p.status === 'found') {
           const category = S.guessCategory(`${p.tags} ${p.name}`);
+          const name = fullName(p.brand, p.name, p.size);
           Object.assign(line, {
-            name: p.name, notes: [p.brand, p.size].filter(Boolean).join(', '), category,
+            name, notes: [p.brand, p.size].filter(Boolean).join(', '), category,
             location: S.defaultLocation(category),
           });
-          const it = bestNameMatch(p.name);
+          const it = bestNameMatch(name);
           if (it) setItem(line, it, p.size);
-          status(`Added ${p.name}`);
+          status(`Added ${name}`);
         } else {
           line.name = '';
           line.notes = `Barcode ${code}`;

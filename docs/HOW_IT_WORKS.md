@@ -40,6 +40,7 @@ Why `start.cmd` instead of double-clicking `index.html`: the app uses ES modules
        │
   READERS (lazy) ai.js        shrink a photo; Claude or Qwen read it, return JSON
                  ocr.js       no-AI receipts: read text on the device, rules -> lines
+                 phnames.js   PH receipt shorthand -> "Brand Product Variant Size"
                  barcode.js   no-AI groceries: camera barcodes + Open Food Facts
 ```
 
@@ -188,6 +189,35 @@ pantry, list and spend views therefore work offline and never download the SDK.
 - Learning happens in `applyScan`: every saved receipt line writes
   `aliases[key] = item id`. Correct a match once; it sticks. This works for all
   three readers, not just the no-AI one.
+
+### `phnames.js` (Philippine receipt names)
+Puregold/SM receipts squeeze each product into ~20 characters: `PF CB210G`,
+`HNTSPRK BNS230G`, `WKHCAKEW-SYRUP400G`. `expandName` turns those into
+**Brand Product Variant Size** ("Purefoods Corned Beef 210g", "Hunt's Pork &
+Beans 230g", "White King Pancake Mix Syrup 400g"). Analogy: a cashier who has
+read ten thousand Puregold receipts and can say each line out loud.
+- It glues the words together first (`HNTSPRKBNS230G`), because receipts and
+  OCR drop spaces at random, so no pattern depends on them.
+- `BRANDS` (~90 common PH brands): the earliest one on the line wins. Short codes
+  (PF, DM, WK, LC, BF, GG, DP, GAR) only count at the start of the line. A brand
+  can carry a default product (Datu Puti -> Vinegar, Zonrox -> Bleach) and a
+  category that blocks wrong products (Cream Silk `COND` is conditioner, never
+  condensed milk).
+- `PRODUCTS` (~130 items, first match wins, specific above general). `sq`/`ab`
+  build squeezed spellings: vowels and doubled letters optional, so `ab('PORK
+  BEANS')` matches PRKBNS. Words with under 4 consonants stay literal, or `TS`
+  would mean TISSUE everywhere.
+- What's left after brand + product is the variant, but only whole tokens that
+  look like words or are known abbreviations (`WORDS`), and not a squeezed
+  repeat of the product ("MLK" after Milk). Size comes from the raw text.
+- Lines with nothing recognised return `null` and keep the printed name, so AU
+  receipts ("TIN TOMATOES 400G") are untouched.
+- Used by `parseReceiptText`; the AI prompts get the same knowledge as
+  `RECEIPT_HINT`, and `fullName` gives grocery-photo and barcode items the same
+  Brand Product Size shape. `mergeLines` still judges OCR copies by the
+  *printed* name (`printed`), since a longer expanded name is not a better read.
+- To teach it a new product: add a row to `PRODUCTS` or `BRANDS`, then add the
+  receipt line to the "PH receipt names" check in `tests/e2e.py`.
 
 ### `barcode.js` (no-AI groceries)
 - `startScanner` uses the browser's own `BarcodeDetector` where it exists

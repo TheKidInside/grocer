@@ -258,7 +258,7 @@ GST INCLUDED IN TOTAL 2:22`;
       return parseReceiptText(text, { match }); }""")
     got = [(l["name"], l["qty"], l["unit"], l["line_total"], l["skip"], l["match_id"]) for l in parsed["lines"]]
     check(parsed["date"] == "2026-11-06" and parsed["total"] == 48.99 and parsed["store"] == "Freshway Market", f"receipt header ({parsed['store']}, {parsed['date']}, {parsed['total']})")
-    check(got == [("Fc Milk 2L", 2, "L", 3.8, False, "milk"), ("Bananas Cavendish", 0.856, "kg", 3.34, False, ""),
+    check(got == [("Full Cream Milk 2L", 2, "L", 3.8, False, "milk"), ("Bananas Cavendish", 0.856, "kg", 3.34, False, ""),
                   ("Eggs Free Range 12pk", 1, "pcs", 7.2, False, ""), ("Tin Tomatoes 400g", 2, "pcs", 5, False, ""),
                   ("Reusable Bag", 1, "pcs", 0.15, True, ""), ("Loyalty Discount", 1, "pcs", -1, True, "")], f"receipt lines {got}")
     extra = dpage.evaluate("""async () => {
@@ -307,18 +307,28 @@ BDO CREDIT 9,114.33`]),
     check(extra["lines"] == [["Milk", 3, "pcs", 4.5], ["Bananas", 0.856, "kg", 3.34], ["Birthday Card", 1, "pcs", 4.5], ["Cashews 300g", 1, "pcs", 7]]
           and extra["total"] == 19.34, f"parser: '3 x', 'kg NET @', product words like CARD/CASH, TOTAL (n ITEMS) ({extra['lines']}, {extra['total']})")
     m = extra["merged"]
-    check([(l["name"], l["qty"], l["line_total"]) for l in m["lines"]] == [("Milo 48g", 1, 148), ("A Item", 1, 2), ("B Thing", 2, 6)]
+    check([(l["name"], l["qty"], l["line_total"]) for l in m["lines"]] == [("Milo Chocolate Drink 48g", 1, 148), ("A Item", 1, 2), ("B Thing", 2, 6)]
           and m["total"] == 156 and m["lines"][0]["barcode"] == "4800361415293", f"overlapping photos merged, barcode kept ({m['lines']})")
     got = [(l["name"], l["qty"], l["line_total"], l["skip"]) for l in extra["pure"]["lines"]]
-    check([g[:3] for g in got] == [("Milo Actv-Twin48gx", 1, 148), ("Dp Adb S-Pnnyhng A", 3, 114), ("Birchtree Fc29g7+1", 1, 67.8),
-                                   ("Gar Hf W-Bread400g", 1, 80.25), ("Cheers Trash Bags", 2, 80.5)],
-          f"Puregold layout: code+name line, qty line, VAT flag, stray marks, OCR'd x, digit slips ({got})")
+    check([g[:3] for g in got] == [("Milo Chocolate Drink Actv Twin 48g", 1, 148), ("Datu Puti Adobo", 3, 114), ("Birch Tree Powdered Milk Full Cream 29g", 1, 67.8),
+                                   ("Gardenia Wheat Bread High Fiber 400g", 1, 80.25), ("Cheers Trash Bags", 2, 80.5)],
+          f"Puregold layout + PH names expanded: code+name line, qty line, VAT flag, stray marks, OCR'd x, digit slips ({got})")
     check(not got[4][3], "trash bags are an item, not a bag charge")
     pg = extra["pure"]
     check(pg["total"] == 9114.33 and pg["date"] == "2026-11-07", f"total despite 'Wototal' + thousands separator ({pg['total']}, {pg['date']})")
     check(extra["packs"] == [380, 2.25, None, 1500], f"pack sizes ({extra['packs']})")
     check(extra["keys"][0] != extra["keys"][1] and extra["keys"][2] == "TIN TOM", f"learned-line keys ({extra['keys']})")
     check(extra["choc"] == "Snacks", "milk chocolate is a snack, not milk")
+    ph = dpage.evaluate("""async () => { const { expandName, fullName } = await import('./phnames.js');
+      return { names: ['PF CB210G', 'HNTSPRK BNS230G DP', 'ALASKA COND 545G', 'WKHCAKEW-SYRUP400G', 'DOWNY GARDEN BLOOM 1.4L',
+        'CREAMSILK COND STD 180ML', 'LUCKY ME PANCIT CANTON CHILIMANSI 60G', 'MYSKYFLK25GX24S', 'GG TRTI CHESSE 25G'].map(t => expandName(t)?.name),
+        plain: ['BANANAS CAVENDISH', 'TIN TOMATOES 400G', 'CANDLES 6S', 'LICORICE 200G', 'EGGS FREE RANGE 12PK'].map(t => expandName(t)),
+        full: [fullName('Bega', 'Vegemite', '380 g'), fullName('Bega', 'Bega Vegemite 380g', '380 g')] }; }""")
+    check(ph["names"] == ["Purefoods Corned Beef 210g", "Hunt's Pork & Beans 230g", "Alaska Condensed Milk 545g", "White King Pancake Mix Syrup 400g",
+                          "Downy Fabric Conditioner Garden Bloom 1.4L", "Cream Silk Conditioner 180mL", "Lucky Me Pancit Canton Chilimansi 60g",
+                          "SkyFlakes Crackers 25g x24", "Granny Goose Tortillos Cheese 25g"], f"PH receipt names expanded: brand + product + variant + size ({ph['names']})")
+    check(ph["plain"] == [None] * 5, f"ordinary names left alone ({ph['plain']})")
+    check(ph["full"] == ["Bega Vegemite 380g"] * 2, f"brand + size added once ({ph['full']})")
     check(dpage.evaluate("import('./barcode.js').then(b => b.validGtin('01234565'))"), "UPC-E barcodes accepted")
     cats = dpage.evaluate("""async () => { const S = await import('./store.js');
       return ['FC MILK 2L', 'TIN TOMATOES 400G', 'NAPPIES SZ4', 'SOURDOUGH LOAF', 'BANANAS', 'beverages sports-drinks'].map(S.guessCategory); }""")
@@ -380,7 +390,7 @@ BDO CREDIT 9,114.33`]),
     dpage.get_by_text("Check the groceries").wait_for()
     names = [x.input_value() for x in dpage.locator("[data-field=name]").all()]
     qtys = [x.input_value() for x in dpage.locator("[data-field=qty]").all()]
-    check(names == ["Vegemite", "Barcode 4800361339148"] and qtys == ["2", "1"], f"barcodes: found + unknown, repeat scan counts up ({names}, {qtys})")
+    check(names == ["Bega Vegemite 380g", "Barcode 4800361339148"] and qtys == ["2", "1"], f"barcodes: found + unknown, repeat scan counts up ({names}, {qtys})")
     dpage.locator("[data-field=name]").nth(1).fill("Pancit canton")
     dpage.get_by_role("button", name="Save to pantry").click()
     check(dpage.locator(".row", has_text="Pancit canton").count() == 1 and dpage.locator(".row", has_text="Vegemite").count() == 1, "barcode items added")
