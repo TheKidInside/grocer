@@ -49,7 +49,8 @@ def check(cond, msg):
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
-    page = browser.new_page(viewport={"width": 390, "height": 844})
+    # service workers off so the fake ai.js route also applies on the hosted (https) site
+    page = browser.new_page(viewport={"width": 390, "height": 844}, service_workers="block")
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
     page.route("**/ai.js", lambda r: r.fulfill(status=200, content_type="text/javascript", body=FAKE_AI))
