@@ -178,6 +178,48 @@ function pickTotal(amounts, linesSum = null) {
   return amounts.reduce((best, a) => (Math.abs(a - linesSum) < Math.abs(best - linesSum) ? a : best));
 }
 
+// Grocery chains, matched even when the faint header is misread
+// ("Parejola Pree Clic" -> Puregold). Checked on the top lines and the footer
+// (Puregold, SM and others print their name again at the bottom).
+const CHAINS = [
+  'Puregold', 'SM Supermarket', 'SM Hypermarket', 'Savemore', 'Robinsons Supermarket', 'Robinsons Easymart',
+  'Waltermart', 'Landers', 'S&R Membership Shopping', 'Shopwise', "Rustan's", 'Metro Supermarket', 'Gaisano',
+  'Alfamart', '7-Eleven', 'Ministop', 'AllDay', 'Mercury Drug', 'Watsons', 'South Supermarket', 'Super8',
+  'Woolworths', 'Coles', 'Aldi', 'IGA', 'Costco', 'Harris Farm', 'FoodWorks', 'Drakes', 'Foodland',
+];
+const letters = (s) => s.toUpperCase().replace(/[^A-Z0-9&]/g, '');
+function grams(s) { const t = letters(s); const g = new Set(); for (let k = 0; k < t.length - 1; k++) g.add(t.slice(k, k + 2)); return g; }
+function dice(a, b) { let n = 0; for (const g of a) if (b.has(g)) n++; return a.size + b.size ? (2 * n) / (a.size + b.size) : 0; }
+function knownChain(lines) {
+  let best = null;
+  let bestScore = 0;
+  for (const l of [...lines.slice(0, 12), ...lines.slice(-20)]) {
+    const words = l.split(' ');
+    for (const chain of CHAINS) {
+      const want = chain.split(' ').length;
+      // compare against the start of the line, as long as the chain's name (+1 word for misreads)
+      const head = words.slice(0, Math.max(1, want + 1)).join(' ');
+      const cg = grams(chain);
+      if (cg.size < 2) continue;
+      // similar letters AND similar length ("SHOP 4" is not "SHOPWISE")
+      const fit = (t) => { const tl = letters(t).length; const cl = letters(chain).length; return Math.min(tl, cl) / Math.max(tl, cl) >= 0.7 ? dice(cg, grams(t)) : 0; };
+      const score = Math.max(fit(head), fit(words.slice(0, want).join(' ')));
+      if (score > bestScore) { bestScore = score; best = chain; }
+    }
+  }
+  return bestScore >= 0.6 ? best : null;
+}
+// The receipt's tax/business number (PH "VAT REG TIN", AU "ABN"): read
+// reliably and unique per branch, so a store name you correct once sticks.
+function taxId(lines) {
+  for (const l of lines.slice(0, 15)) {
+    if (!/\b(tin|abn|vat\s*reg)\b/i.test(l)) continue;
+    const digits = l.replace(/[^0-9]/g, '');
+    if (digits.length >= 9) return digits.slice(0, 14);
+  }
+  return '';
+}
+
 // Pure: one photo's text -> { store, date, total, itemsCount, lines[] } in the AI
 // readers' shape. match(name, receiptText, barcode) -> { id, unit, guess } | null.
 export function parseReceiptText(text, { dayFirst = true, match = () => null } = {}) {
@@ -189,7 +231,10 @@ export function parseReceiptText(text, { dayFirst = true, match = () => null } =
     return letters.length >= 4 && new Set(letters.toLowerCase()).size >= 4 && letters.length / l.replace(/\s/g, '').length >= 0.6;
   };
   const storeLine = lines.slice(0, 8).find((l) => wordy(l) && !META_RE.test(l)) || '';
-  const store = titleCase(cleanLead(storeLine).slice(0, 40));
+  // The store: a known chain if one is recognisable, else the first proper line at the top.
+  const chain = knownChain(lines);
+  const store = chain || titleCase(cleanLead(storeLine).slice(0, 40));
+  const storeHints = { tin: taxId(lines), header: cleanLead(storeLine), chain: !!chain };
   const date = findDate(lines, dayFirst);
   const countLine = lines.map((l) => l.match(/items?\s+(?:purchased|sold)\D{0,4}(\d{1,4})/i)).find(Boolean);
 
@@ -286,7 +331,7 @@ export function parseReceiptText(text, { dayFirst = true, match = () => null } =
     }
   }
   const linesSum = out.reduce((t, l) => t + l.line_total, 0);
-  return { store, date, total: pickTotal(amounts, linesSum), itemsCount: countLine ? Number(countLine[1]) : null, lines: out };
+  return { store, storeHints, date, total: pickTotal(amounts, linesSum), itemsCount: countLine ? Number(countLine[1]) : null, lines: out };
 }
 
 // Several photos of one long receipt -> one receipt. Each photo is read on its
@@ -310,7 +355,9 @@ export function parseReceiptPhotos(texts, opts = {}) {
   const plausible = (t) => sum <= 0 || t >= sum * 0.75; // larger is fine: lines were missed
   if (total !== null && !plausible(total)) total = totals.find(plausible) ?? null;
   return {
-    store: parts.find((p) => p.store)?.store || '',
+    // a recognised chain from any photo (the footer one may be clearer), else the top photo's header
+    store: parts.find((p) => p.storeHints.chain)?.store || parts.find((p) => p.storeHints.tin || p.date)?.store || parts.find((p) => p.store)?.store || '',
+    storeHints: { tin: parts.map((p) => p.storeHints.tin).find(Boolean) || '', header: parts.find((p) => p.storeHints.header)?.storeHints.header || '' },
     date,
     total: round(total ?? sum, 2),
     totalGuessed: total === null && lines.length > 0,

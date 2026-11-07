@@ -476,7 +476,7 @@ Total Amt Due 788.45`;
         code = route.request.url.split("/product/")[1].split(".json")[0]
         body = {"status": 1, "product": {"product_name": "Vegemite", "brands": "Bega", "quantity": "380 g", "categories_tags": ["en:spreads", "en:yeast-extract-spreads"]}}             if code == "9300650658516" else {"status": 0}
         route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
-    dpage.route("https://world.openfoodfacts.org/**", fake_off)
+    dpage.route("https://world.open*facts.org/**", fake_off)
     dpage.get_by_role("button", name="Scan barcodes").click()
     for code in ["9300650658516", "9300650658516", "4800361339148"]:
         dpage.fill("#bc-manual", code)

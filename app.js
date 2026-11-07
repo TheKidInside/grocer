@@ -417,9 +417,25 @@ function qtyUnit(l, match) {
   return { qty, unit };
 }
 
+// The store name you confirmed for this receipt's tax number (TIN/ABN) or header
+// line before - the header is often faint and misread differently each time.
+function learnedStore(h) {
+  if (!h) return '';
+  if (h.tin && state.stores['tin:' + h.tin]) return state.stores['tin:' + h.tin];
+  const key = S.aliasKey(h.header || '');
+  if (key.length < 4) return '';
+  if (state.stores['h:' + key]) return state.stores['h:' + key];
+  const max = key.length >= 14 ? 3 : key.length >= 8 ? 2 : 1;
+  for (const [k, name] of Object.entries(state.stores)) {
+    if (k.startsWith('h:') && editDistance(k.slice(2), key, max) <= max) return name;
+  }
+  return '';
+}
+
 function normalizeReceipt(r) {
   return {
-    store: String(r.store || '').trim(),
+    store: learnedStore(r.storeHints) || String(r.store || '').trim(),
+    storeHints: r.storeHints || null,
     date: S.validDate(r.date) || S.today(),
     total: S.round(S.num(r.total), 2),
     itemsCount: Number.isInteger(r.itemsCount) ? r.itemsCount : null,
@@ -679,6 +695,12 @@ function applyScan() {
       const key = S.aliasKey(l.receiptText);
       S.remember(state.aliases, key, item.id);
       purchaseLines.push({ name: item.name, itemId: item.id, category: item.category, qty, unit: item.unit, lineTotal: l.lineTotal });
+    }
+    // Remember the store name for this receipt's tax number and header line.
+    if (d.store && d.storeHints) {
+      if (d.storeHints.tin) S.remember(state.stores, 'tin:' + d.storeHints.tin, d.store, 200);
+      const hk = S.aliasKey(d.storeHints.header || '');
+      if (hk.length >= 4) S.remember(state.stores, 'h:' + hk, d.store, 200);
     }
     state.purchases.push({
       id: S.uid(), date, store: d.store || 'Unknown store', total: d.total,
@@ -1287,7 +1309,7 @@ document.addEventListener('click', (e) => {
     case 'wipe':
       if (confirm('Erase all pantry items, lists and spending on this device? This cannot be undone.')) {
         const settings = state.settings;
-        state = { ...S.load(), items: [], purchases: [], extras: [], checked: {}, aliases: {}, renames: {}, barcodes: {}, settings };
+        state = { ...S.load(), items: [], purchases: [], extras: [], checked: {}, aliases: {}, renames: {}, stores: {}, barcodes: {}, packs: {}, settings };
         commit(); closeModal(); render(); toast('All data erased');
       }
       break;

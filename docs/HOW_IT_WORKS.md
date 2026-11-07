@@ -245,9 +245,11 @@ read ten thousand Puregold receipts and can say each line out loud.
   (Android Chrome) and the ZXing library otherwise (iPhone Safari, desktop).
 - `validGtin` checks the barcode's check digit (expanding short UPC-E codes
   first), so misreads and QR codes are ignored.
-- `lookupProduct` asks Open Food Facts (free public database) for name, brand,
-  size and categories. `guessCategory` (store.js) maps those to Larder's
-  categories by keywords.
+- `lookupProduct` asks the Open Food Facts family (free, no key): food first,
+  then Open Beauty Facts and Open Products Facts for toiletries and household
+  goods. Measured on a real Puregold receipt: 33 of its 75 barcodes known. The
+  rest come from your own receipts - Puregold prints each item's barcode next
+  to its name, and every saved receipt teaches Larder those barcodes.
 - In app.js, `openBarcodeScanner` collects scans into a list (same code twice =
   qty 2; holding one in view counts once), then hands them to the normal
   groceries review screen. Saving writes `barcodes[code] = item id` and
@@ -332,3 +334,13 @@ dev on `localhost` always gets fresh files.
 - **The API key is stored in this browser's localStorage.** Fine for a personal
   device; anyone using that browser profile could read it. Set a monthly spend
   limit on the key in the Anthropic console.
+
+## Store names
+
+The receipt's header is often faint. `knownChain` (ocr.js) recognises the big
+PH/AU chains (Puregold, SM, Robinsons, Waltermart, S&R, Woolworths, Coles...)
+even misread ("Puregola Price Cluo" -> Puregold), on the top lines and the
+footer. Otherwise the first proper header line is used. Whatever store name you
+save is remembered against the receipt's tax number (TIN/ABN - digits read
+reliably, one per branch) and header line (`state.stores`), so a misread header
+is fixed once. `tests/store_names.py` checks the matching.

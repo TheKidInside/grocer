@@ -26,7 +26,7 @@ with sync_playwright() as p:
     page = ctx.new_page()
     errs = []
     page.on("pageerror", lambda e: errs.append(str(e)))
-    page.route("https://world.openfoodfacts.org/**", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(
+    page.route("https://world.open*facts.org/**", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(
         {"status": 1, "product": {"product_name": "Vegemite", "brands": "Bega", "quantity": "380 g", "categories_tags": ["en:spreads"]}} if "9300650658516" in r.request.url else {"status": 0})))
     page.goto(BASE)
     page.evaluate("localStorage.clear(); sessionStorage.clear()")

@@ -93,13 +93,28 @@ export async function startScanner(video, onCode) {
   return () => controls.stop();
 }
 
+// The Open Food Facts family: food first, then toiletries (Open Beauty Facts)
+// and household goods (Open Products Facts) - same free API, no key. Checked
+// against a real Puregold receipt: these three knew 33 of its 75 barcodes.
+const PRODUCT_DBS = ['world.openfoodfacts.org', 'world.openbeautyfacts.org', 'world.openproductsfacts.org'];
+
 // -> { status: 'found', name, brand, size, tags } | { status: 'missing' } | { status: 'error' }
 export async function lookupProduct(code) {
+  let failed = 0;
+  for (const host of PRODUCT_DBS) {
+    const r = await lookupIn(host, code);
+    if (r.status === 'found') return r;
+    if (r.status === 'error') failed++;
+  }
+  return { status: failed === PRODUCT_DBS.length ? 'error' : 'missing' };
+}
+
+async function lookupIn(host, code) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
     const res = await fetch(
-      `https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,product_name_en,generic_name,brands,quantity,categories_tags`,
+      `https://${host}/api/v2/product/${code}.json?fields=product_name,product_name_en,generic_name,brands,quantity,categories_tags`,
       { signal: ctrl.signal },
     );
     if (res.status === 404) return { status: 'missing' };
