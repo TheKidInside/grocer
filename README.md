@@ -16,26 +16,28 @@ No build step and no server: static files, data stored in the browser.
 start.cmd        # http://localhost:8790
 ```
 
-## Set up photo scanning
+## Reading receipts and groceries
 
-Two readers, picked in Settings (gear) -> "Read photos with":
+Three readers, picked in Settings (gear) -> "Read photos with":
 
-| | Claude (Anthropic) | Qwen on this PC |
-|---|---|---|
-| Works on | any device, incl. phone | only the PC running it |
-| Cost | a few cents a scan | free |
-| Accuracy | best | good; misreads some multi-buy and weighed lines |
-| Setup | API key from https://console.anthropic.com (set a spend limit) | run `C:\Artificial\tools\llm\start-qwen.cmd` (loads the vision file `--mmproj`) |
+| | On this device (no AI) - default | Claude (Anthropic) | Qwen on this PC |
+|---|---|---|---|
+| Works on | any device, incl. phone | any device | only the PC running it |
+| Cost | free | a few cents a scan | free |
+| Receipts | text read on the phone + rules; learns your corrections | best | good |
+| Groceries | barcode scanning + Open Food Facts | photo of the whole bench | photo of the whole bench |
+| Setup | none | API key from https://console.anthropic.com | run `C:\Artificial\tools\llm\start-qwen.cmd` |
 
-The API key stays on your device and is sent only to Anthropic. Qwen photos never leave the PC.
-The first time the hosted page calls Qwen, the browser may ask to allow access to devices on your local network: allow it.
+- **No AI:** the first receipt downloads the text reader (a few MB, once). Fix a line once on the review screen and the same line matches automatically next time. Barcodes not in Open Food Facts are named once and remembered.
+- The API key stays on your device and is sent only to Anthropic. Qwen photos never leave the PC; the browser may ask to allow "local network access" for it.
 
 ## Test
 
 ```
-py -3 tests\e2e.py http://localhost:8790/
+py -3 tests\e2e.py http://localhost:8790/            # whole app; fake AI, real on-device receipt reading
+py -3 tests\camera_barcode.py http://localhost:8790/  # camera barcode scan via a fake webcam
 ```
 
-Drives the real UI in headless Chromium with a fake AI module, so it costs nothing.
+Both drive the real UI in headless Chromium and cost nothing.
 
 See [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) for a walkthrough of the code.

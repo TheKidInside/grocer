@@ -23,7 +23,10 @@ function empty() {
     purchases: [],  // shopping trips (receipt scans + manual entries)
     extras: [],     // one-off shopping list entries
     checked: {},    // shopping-list ticks, keyed 'item:<id>' / 'extra:<id>'
-    settings: { apiKey: '', provider: 'anthropic', localUrl: 'http://127.0.0.1:8080', currency: guessCurrency(), theme: 'system' },
+    aliases: {},    // receipt line (aliasKey) -> item id, learned from your corrections
+    barcodes: {},   // barcode -> item id
+    packs: {},      // barcode -> quantity one scan adds, in the item's unit
+    settings: { apiKey: '', provider: 'device', localUrl: 'http://127.0.0.1:8080', currency: guessCurrency(), theme: 'system' },
   };
 }
 
@@ -89,7 +92,13 @@ export function sanitize(data) {
   const extras = (Array.isArray(data?.extras) ? data.extras : []).filter(isObj)
     .map((x) => ({ id: str(x.id) || uid(), name: str(x.name), note: str(x.note) }))
     .filter((x) => x.name);
-  return { items, purchases, extras };
+  // Lookup tables pointing at items: keep only entries whose item still exists.
+  const table = (v) => Object.fromEntries(Object.entries(isObj(v) ? v : {})
+    .filter(([k, id]) => k && typeof id === 'string' && ids.has(id)));
+  const barcodes = table(data?.barcodes);
+  const packs = Object.fromEntries(Object.entries(isObj(data?.packs) ? data.packs : {})
+    .filter(([k, v]) => barcodes[k] && num(v) > 0).map(([k, v]) => [k, num(v)]));
+  return { items, purchases, extras, aliases: table(data?.aliases), barcodes, packs };
 }
 
 export function save(state) {
@@ -169,6 +178,62 @@ export function daysUntil(dateStr) {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   return Math.round((target - start) / 86400000);
+}
+
+// Keyword guess at a category from a product name or Open Food Facts tags.
+// Order matters: "baby" before "milk", "frozen" before "chicken", drinks before fruit,
+// snacks before dairy (MILK CHOCOLATE is a snack, not milk).
+const CATEGORY_WORDS = [
+  ['Baby', /\b(bab(y|ies)|nappy|nappies|diapers?|wipes|formula|infant|toddler)\b/i],
+  ['Frozen', /\b(frozen|frz|ice\s*cream|gelato)\b/i],
+  ['Personal Care', /\b(shampoo|conditioner|toothpaste|toothbrush|deodorant|soap\s*bar|body\s*wash|razor|tampons?|pads|lotion|sunscreen|beauty|hygiene)\b/i],
+  ['Household', /\b(detergent|dish(washing)?|laundry|bleach|cleaner|toilet\s*(paper|tissue)|paper\s*towel|tissues?|foil|cling|bin\s*bags?|sponge|batter(y|ies))\b/i],
+  ['Drinks', /\b(beverages?|drinks?|juice|water|soda|cola|coke|softdrink|lemonade|coffee|tea|cordial|beer|wine|powerade|gatorade)\b/i],
+  ['Snacks', /\b(snacks?|chips|crisps|biscuits?|cookies?|chocolate|choc|lollies|candy|confection\w*|crackers?|popcorn|nuts|muesli\s*bar)\b/i],
+  ['Dairy & Eggs', /\b(dair(y|ies)|milks?|cheeses?|yogh?urts?|butter|cream|eggs?)\b/i],
+  ['Bakery', /\b(bread|breads|loaf|sourdough|rolls?|buns?|wraps?|bagels?|croissants?|muffins?|bakery|pastr(y|ies)|cakes?)\b/i],
+  ['Meat & Seafood', /\b(meats?|beef|mince|steak|chicken|pork|lamb|bacon|ham|sausages?|salami|fish|salmon|tuna|prawns?|seafood|poultry|thigh|breast)\b/i],
+  ['Produce', /\b(fruits?|vegetables?|veg|bananas?|apples?|oranges?|pears?|grapes?|berr(y|ies)|lemons?|limes?|avocados?|tomato(es)?|potato(es)?|onions?|garlic|carrots?|lettuce|spinach|broccoli|cucumbers?|capsicum|mushrooms?|herbs?|salad|fresh)\b/i],
+];
+export function guessCategory(text) {
+  const t = String(text || '').replace(/[-_]/g, ' ');
+  if (/\b(tin|tinned|canned|can|peanut)\b/i.test(t)) return 'Pantry';
+  for (const [cat, re] of CATEGORY_WORDS) if (re.test(t)) return cat;
+  return 'Pantry';
+}
+
+// Stable key for a receipt line, so a correction made once is reused next time:
+// prices, weights and bare counts are dropped; sizes like "2L" or "400G" stay.
+export function aliasKey(text) {
+  return String(text || '').toUpperCase()
+    .replace(/(\d+)[.,](\d+)\s*(ML|L|KG|G)\b/g, '$1_$2$3') // keep "1.5L" apart from "0.6L"
+    .replace(/\$?\d*[.,:]\d+/g, ' ')
+    .replace(/\b\d+\b/g, ' ')
+    .replace(/[^A-Z0-9_ ]+/g, ' ')
+    .replace(/\b(KG|EA|EACH)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Remember a learned lookup (receipt line or barcode -> item), keeping the table to
+// the most recent `cap` entries so misreads can't grow it forever.
+export function remember(table, key, value, cap = 500) {
+  if (!key) return;
+  delete table[key]; // re-insert so it counts as the newest
+  table[key] = value;
+  const keys = Object.keys(table);
+  for (let i = 0; i < keys.length - cap; i++) delete table[keys[i]];
+}
+
+// Pack size in an item's unit, from text like "380 g", "2L", "1.5 kg" or "6 x 375 mL".
+// null when there is no size or the units don't convert (a 2 L bottle vs pcs).
+const SIZE_UNITS = { kg: 'kg', g: 'g', gm: 'g', ml: 'mL', l: 'L', lt: 'L', ltr: 'L' };
+export function packQty(text, unit) {
+  const m = String(text || '').match(/(?:(\d+)\s*[x×]\s*)?(\d+(?:[.,]\d+)?)\s*(kg|gm|g|ml|ltr|lt|l)\b/i);
+  if (!m) return null;
+  const n = parseFloat(m[2].replace(',', '.')) * (m[1] ? Number(m[1]) : 1);
+  const q = convertQty(n, SIZE_UNITS[m[3].toLowerCase()], unit);
+  return q && q > 0 ? q : null;
 }
 
 export function defaultLocation(category) {

@@ -4,6 +4,7 @@
 // works offline.
 
 import { CATEGORIES, UNITS, LOCATIONS } from './store.js';
+import { cleanForText } from './textprep.js';
 
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.3.0/+esm';
 const MODEL = 'claude-opus-5-5';
@@ -12,16 +13,21 @@ const MAX_EDGE = 1568; // Claude downsizes anything larger, so don't upload it
 export class AIError extends Error {}
 
 // File -> { block: Claude image block, preview: data URL }
-export async function prepareImage(file) {
+// forText: prepare for on-device text reading instead - enlarge narrow photos so
+// letters are big enough, straighten and turn black/white (textprep.js).
+export async function prepareImage(file, maxEdge = MAX_EDGE, { forText = false } = {}) {
   const img = await decode(file);
   const w = img.width || img.naturalWidth;
   const h = img.height || img.naturalHeight;
-  const scale = Math.min(1, MAX_EDGE / Math.max(w, h));
+  const fit = maxEdge / Math.max(w, h);
+  const scale = forText ? Math.min(fit, Math.max(1, 1600 / w)) : Math.min(1, fit);
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(w * scale);
   canvas.height = Math.round(h * scale);
   canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+  const out = forText ? cleanForText(canvas) : canvas;
+  const dataUrl = forText ? out.toDataURL('image/png') : out.toDataURL('image/jpeg', 0.85);
+  if (out !== canvas) { out.width = 0; out.height = 0; }
   // Free the full-size decode and the canvas backing store straight away (iOS memory).
   img.close?.();
   canvas.width = 0;

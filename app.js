@@ -304,27 +304,37 @@ async function copyList() {
 
 function viewScan() {
   if (ui.scan) return scanPanel();
-  const local = state.settings.provider === 'local';
-  const card = (kind, title, text) => `<div class="card scan-card">
-    <h2>${title}</h2><p class="muted">${text}</p>
-    <div class="btn-row">
-      <button class="btn primary" data-act="pick" data-kind="${kind}" data-camera="1">Take photo</button>
-      <button class="btn" data-act="pick" data-kind="${kind}">Choose photos</button>
-    </div></div>`;
-  const notice = local
-    ? `<div class="notice">Reading photos with Qwen on this PC (${esc(state.settings.localUrl)}). Start <b>start-qwen</b> first. <a href="#" data-act="settings">Change</a></div>`
-    : readerReady() ? '' : '<div class="notice">Photo reading needs an Anthropic API key, or switch to Qwen on this PC. <a href="#" data-act="settings">Open Settings</a>.</div>';
-  return `${notice}
-    <div class="scan-cards">
-      ${card('receipt', 'Receipt', 'Snap your receipt after shopping. Larder reads each line, restocks the pantry and logs what you spent. Long receipt? Photograph it in parts and choose all the photos together.')}
-      ${card('items', 'Groceries', 'Photograph items on the bench, in the fridge or on a shelf. Larder names them, counts them and reads sizes and best-before dates.')}
-    </div>
-    <p class="small muted">${local
-    ? 'Photos are read by Qwen running on your own PC: free and private, but only from this computer.'
-    : "Photos are read by Anthropic's Claude using your own API key, about a few cents per scan. Nothing is kept on any server."}</p>`;
+  const p = state.settings.provider;
+  const photo = (kind, primary) => `<button class="btn${primary ? ' primary' : ''}" data-act="pick" data-kind="${kind}" data-camera="1">Take photo</button>
+      <button class="btn" data-act="pick" data-kind="${kind}">Choose photos</button>`;
+  const barcodeBtn = (primary) => `<button class="btn${primary ? ' primary' : ''}" data-act="barcodes">Scan barcodes</button>`;
+  const card = (title, text, buttons) => `<div class="card scan-card">
+    <h2>${title}</h2><p class="muted">${text}</p><div class="btn-row">${buttons}</div></div>`;
+
+  let notice = '';
+  if (p === 'local') notice = `<div class="notice">Reading photos with Qwen on this PC (${esc(state.settings.localUrl)}). Start <b>start-qwen</b> first. <a href="#" data-act="settings">Change</a></div>`;
+  else if (p === 'anthropic' && !readerReady()) notice = '<div class="notice">Claude needs an Anthropic API key, or switch to reading on this phone. <a href="#" data-act="settings">Open Settings</a>.</div>';
+
+  const receipt = p === 'device'
+    ? card('Receipt', 'Snap your receipt after shopping. Larder reads the text right here on your phone, restocks the pantry and logs what you spent. Fix a line once and it remembers it next time. Lay it flat in good light; photograph a long receipt in overlapping parts and choose them together.', photo('receipt', true))
+    : card('Receipt', 'Snap your receipt after shopping. Larder reads each line, restocks the pantry and logs what you spent. Long receipt? Photograph it in parts and choose all the photos together.', photo('receipt', true));
+  const groceries = p === 'device'
+    ? card('Groceries', 'Scan barcodes one after another. Larder looks each up in Open Food Facts, a free product database, and remembers it for next time.', barcodeBtn(true))
+    : card('Groceries', 'Photograph items on the bench, in the fridge or on a shelf, or scan their barcodes one by one.', photo('items', true) + barcodeBtn(false));
+  const footer = {
+    device: 'Receipts are read on this device and barcodes are looked up in Open Food Facts. No AI service is used.',
+    local: 'Photos are read by Qwen running on your own PC: free and private, but only from this computer.',
+    anthropic: "Photos are read by Anthropic's Claude using your own API key, about a few cents per scan. Nothing is kept on any server.",
+  }[p] || '';
+  return `${notice}<div class="scan-cards">${receipt}${groceries}</div><p class="small muted">${footer}</p>`;
 }
 
-const readerReady = () => (state.settings.provider === 'local' ? !!state.settings.localUrl : !!state.settings.apiKey);
+function readerReady() {
+  const p = state.settings.provider;
+  if (p === 'local') return !!state.settings.localUrl;
+  if (p === 'anthropic') return !!state.settings.apiKey;
+  return true;
+}
 
 function pickPhotos(kind, camera) {
   if (!readerReady()) {
@@ -351,18 +361,32 @@ async function startScan(kind, files) {
   const token = S.uid();
   ui.scan = { token, kind, phase: 'loading', previews: [], data: null };
   render();
+  const onDevice = state.settings.provider === 'device' && kind === 'receipt';
   try {
     const ai = await import('./ai.js');
     // One photo at a time: decoding several 12 MP photos at once can crash iOS Safari.
+    // Text reading wants more pixels per line than Claude/Qwen do.
     const images = [];
-    for (const f of files.slice(0, MAX_PHOTOS)) images.push(await ai.prepareImage(f));
+    for (const f of files.slice(0, MAX_PHOTOS)) images.push(await ai.prepareImage(f, onDevice ? 3200 : undefined, { forText: onDevice }));
     if (ui.scan?.token !== token) return;
     if (files.length > MAX_PHOTOS) toast(`Only the first ${MAX_PHOTOS} photos are read - scan the rest separately`);
     ui.scan.previews = images.map((i) => i.preview);
     if (tab === 'scan') render();
-    const raw = kind === 'receipt'
-      ? await ai.readReceipt(state.settings, images, state.items)
-      : await ai.readItems(state.settings, images, state.items);
+    let raw;
+    if (onDevice) {
+      const ocr = await import('./ocr.js');
+      const text = await ocr.readReceiptText(images, (f) => {
+        const el = document.getElementById('scan-progress');
+        if (el) el.textContent = `Reading the text... ${Math.round(f * 100)}%`;
+      });
+      if (ui.scan?.token !== token) return;
+      ui.scan.ocrText = text;
+      raw = ocr.parseReceiptText(text, { dayFirst: state.settings.currency !== 'USD', match: matchReceiptLine });
+    } else {
+      raw = kind === 'receipt'
+        ? await ai.readReceipt(state.settings, images, state.items)
+        : await ai.readItems(state.settings, images, state.items);
+    }
     if (ui.scan?.token !== token) return;
     ui.scan.data = kind === 'receipt' ? normalizeReceipt(raw) : normalizeItems(raw);
     ui.scan.phase = 'review';
@@ -397,15 +421,24 @@ function normalizeReceipt(r) {
     date: S.validDate(r.date) || S.today(),
     total: S.round(S.num(r.total), 2),
     lines: (r.lines || []).map((l) => {
-      const match = validId(l.match_id);
+      // A line you saved on an earlier receipt wins over any reader's guess.
+      const learned = l.skip ? '' : learnedItem(l.receipt_text);
+      const match = learned || validId(l.match_id);
+      // The reader expressed qty for its own match; re-express it for the learned item.
+      let line = l;
+      if (learned && learned !== l.match_id) {
+        const conv = S.convertQty(S.num(l.qty), l.unit, findItem(learned).unit);
+        if (conv !== null) line = { ...l, qty: conv };
+      }
       return {
         include: !l.skip,
         receiptText: String(l.receipt_text || ''),
         name: String(l.name || l.receipt_text || 'Item').trim(),
         category: pick(CATEGORIES, l.category, 'Other'),
-        ...qtyUnit(l, match),
+        ...qtyUnit(line, match),
         lineTotal: S.round(S.num(l.line_total), 2),
         match,
+        guess: !learned && !!l.guess && !!match,
       };
     }),
   };
@@ -437,7 +470,9 @@ function scanPanel() {
   const noun = s.kind === 'receipt' ? 'receipt' : 'groceries';
   if (s.phase === 'loading') {
     return `<h2>Reading your ${noun}</h2>${thumbs}
-      <div class="loading"><div class="spinner"></div><span>This usually takes 10 to 40 seconds.</span></div>
+      <div class="loading"><div class="spinner"></div><span id="scan-progress">${state.settings.provider === 'device' && s.kind === 'receipt'
+    ? 'Getting the text reader ready (a one-off download the first time)...'
+    : 'This usually takes 10 to 40 seconds.'}</span></div>
       <button class="btn" data-act="scan-cancel">Cancel</button>`;
   }
   if (s.phase === 'error') {
@@ -471,7 +506,7 @@ function receiptReview(s, thumbs) {
           <input type="checkbox" class="check" data-line="${i}" data-field="include" aria-label="Add to pantry"${l.include ? ' checked' : ''}>
           <input type="text" data-line="${i}" data-field="name" value="${esc(l.name)}" aria-label="Name" autocomplete="off">
         </div>
-        ${l.receiptText ? `<div class="receipt-text">${esc(l.receiptText)}</div>` : ''}
+        ${l.receiptText ? `<div class="receipt-text">${esc(l.receiptText)}${l.guess ? ' <span class="pill low">matched by name - check</span>' : ''}</div>` : ''}
         <div class="review-grid four">
           <label class="field">Qty<input type="number" step="any" min="0" inputmode="decimal" data-line="${i}" data-field="qty" value="${l.qty}"></label>
           <label class="field">Unit<select data-line="${i}" data-field="unit">${options(UNITS, l.unit)}</select></label>
@@ -482,6 +517,8 @@ function receiptReview(s, thumbs) {
       </div>`).join('')}
       <div id="scan-totals">${receiptTotals(d)}</div>
     </div>
+    ${s.ocrText ? `<details class="card small"><summary>Text read from the photo</summary><pre class="receipt-text" style="white-space:pre-wrap">${esc(s.ocrText)}</pre>
+      <p class="hint">Missing a line? Add it to the pantry by hand, or retake the photo flat and well lit.</p></details>` : ''}
     <div class="btn-row">
       <button class="btn primary" data-act="scan-apply">Save to pantry &amp; spending</button>
       <button class="btn" data-act="scan-cancel">Discard</button>
@@ -501,7 +538,7 @@ function itemsReview(s, thumbs) {
   return `<h2>Check the groceries</h2>
     ${thumbs}
     <div class="card">
-      <div class="small" style="margin-bottom:8px">These photos show:</div>
+      <div class="small" style="margin-bottom:8px">${s.fromBarcodes ? 'These scans are:' : 'These photos show:'}</div>
       <div class="seg" role="group" aria-label="What the photo shows">
         <button type="button" data-act="items-mode" data-mode="add" aria-pressed="${d.mode === 'add'}">New groceries (add)</button>
         <button type="button" data-act="items-mode" data-mode="set" aria-pressed="${d.mode === 'set'}">Everything on hand (count)</button>
@@ -595,6 +632,9 @@ function applyScan() {
       item.updatedAt = Date.now();
       if (qty > 0) S.recordPrice(item, l.lineTotal / qty, date, d.store);
       delete state.checked['item:' + item.id];
+      // Learn this line, so the next receipt with it matches automatically.
+      const key = S.aliasKey(l.receiptText);
+      S.remember(state.aliases, key, item.id);
       purchaseLines.push({ name: item.name, itemId: item.id, category: item.category, qty, unit: item.unit, lineTotal: l.lineTotal });
     }
     state.purchases.push({
@@ -614,6 +654,10 @@ function applyScan() {
         counted.add(item.id);
       }
       item.qty = S.round(item.qty + qty);
+      if (l.barcode) {
+        S.remember(state.barcodes, l.barcode, item.id, 2000);
+        state.packs[l.barcode] = S.round(qty / (l.scans || 1)); // what one scan of this product adds
+      }
       if (l.expires) item.expires = l.expires;
       item.updatedAt = Date.now();
     }
@@ -623,6 +667,206 @@ function applyScan() {
   const msg = `${updated} updated, ${added} new`;
   if (s.kind === 'receipt') { setTab('spend'); toast(`Receipt saved: ${msg}`); }
   else { setTab('pantry'); toast(`Pantry updated: ${msg}`); }
+}
+
+// ---------- Matching text to pantry items (no AI) ----------
+
+// Words that identify a product: no numbers, 3+ letters, plurals folded so
+// "apples"/"apple" and "tomatoes"/"tomato" compare equal.
+const words = (s) => S.aliasKey(s).toLowerCase().split(' ')
+  .filter((w) => w.length >= 3 && !/\d/.test(w))
+  .map((w) => w.replace(/ies$/, 'y').replace(/s$/, '').replace(/e$/, ''));
+
+// The pantry item whose name words all appear in the text; the longest name wins
+// ("Chicken thighs" beats "Chicken"). Rejected when the text clearly belongs to
+// another category: "Milk" must not match MILK CHOCOLATE, nor "Rice" RICE CRACKERS.
+function bestNameMatch(text) {
+  const have = new Set(words(text));
+  const textCat = S.guessCategory(text);
+  let best = null;
+  let bestLen = 0;
+  for (const it of state.items) {
+    const need = words(it.name);
+    if (!need.length || !need.every((w) => have.has(w))) continue;
+    if (textCat !== 'Pantry' && textCat !== it.category && S.guessCategory(it.name) !== textCat) continue;
+    const len = need.join('').length;
+    if (len > bestLen) { best = it; bestLen = len; }
+  }
+  return best;
+}
+
+// Small edit distance, for receipt lines read slightly differently each time (MlLK vs MILK).
+function editDistance(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// The item a receipt line was saved against before: exact key, else a key that
+// differs by one character (two for long lines).
+function learnedItem(receiptText) {
+  const key = S.aliasKey(receiptText);
+  if (!key) return '';
+  const exact = validId(state.aliases[key]);
+  if (exact) return exact;
+  if (key.length < 6) return '';
+  const max = key.length >= 14 ? 2 : 1;
+  for (const [k, id] of Object.entries(state.aliases)) {
+    if (validId(id) && editDistance(k, key, max) <= max) return id;
+  }
+  return '';
+}
+
+// Used by the on-device receipt reader: learned lines first, then names.
+function matchReceiptLine(name, receiptText) {
+  const learned = findItem(learnedItem(receiptText));
+  if (learned) return { id: learned.id, unit: learned.unit };
+  const it = bestNameMatch(name);
+  return it ? { id: it.id, unit: it.unit, guess: true } : null;
+}
+
+// ---------- Barcode scanning ----------
+
+let barcodeSession = null;
+
+async function openBarcodeScanner() {
+  barcodeSession?.stop();
+  openModal(`<h2>Scan barcodes</h2>
+    <video id="bc-video" playsinline muted autoplay style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:12px;background:#000"></video>
+    <p class="small" id="bc-status" aria-live="polite">Starting the camera...</p>
+    <div id="bc-list" class="small"></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <input type="text" id="bc-manual" inputmode="numeric" enterkeyhint="done" placeholder="Or type the barcode number" aria-label="Barcode number" autocomplete="off">
+      <button class="btn" type="button" data-act="bc-manual">Add</button>
+    </div>
+    <div class="btn-row"><button class="btn primary" type="button" data-act="bc-done">Done</button>
+      <button class="btn" type="button" data-close>Cancel</button></div>`);
+
+  let barcodeLib = null;
+  let stopCamera = null;
+  let closed = false;    // dialog closed: ignore everything from now on
+  let finishing = false; // Done pressed: no new scans while lookups finish
+  const lines = [];
+  const pending = [];
+  const seen = new Map(); // code -> last time seen, so a barcode held in view counts once
+  const status = (t) => { const el = document.getElementById('bc-status'); if (el && !closed) el.textContent = t; };
+  const drawList = () => {
+    const el = document.getElementById('bc-list');
+    if (el && !closed) el.innerHTML = lines.map((l) => `<div>${esc(l.name || `Barcode ${l.barcode}`)} <span class="muted">&times; ${l.scans}</span></div>`).join('');
+  };
+  // One scan adds `per` of the item's unit: 1 for packs, or the pack size for items
+  // you count in g/kg/mL/L (a 380 g jar adds 380 g).
+  const setItem = (line, it, sizeText) => {
+    line.match = it.id;
+    line.unit = it.unit;
+    line.per = state.packs[line.barcode] || S.packQty(sizeText, it.unit) || 1;
+    line.qty = S.round(line.per * line.scans);
+  };
+
+  const session = {
+    add(code, typed) {
+      if (closed || finishing) return;
+      if (!barcodeLib) { toast('Still getting the scanner ready...'); return; }
+      if (!barcodeLib.validGtin(code)) { if (typed) toast('That is not a valid product barcode'); return; }
+      const now = Date.now();
+      const last = seen.get(code) || 0;
+      seen.set(code, now); // every sighting refreshes, so holding still never re-adds
+      if (!typed && now - last < 2500) return;
+      navigator.vibrate?.(40);
+      const existing = lines.find((l) => l.barcode === code);
+      if (existing) {
+        existing.scans += 1;
+        existing.qty = S.round(existing.per * existing.scans);
+        drawList();
+        status(`${existing.name || code}: ${existing.scans}. Take it out of view, then scan again to count another.`);
+        return;
+      }
+      const line = {
+        include: true, barcode: code, name: '', notes: '', category: 'Pantry', location: 'Pantry',
+        qty: 1, unit: 'pcs', per: 1, scans: 1, expires: '', match: '',
+      };
+      lines.push(line);
+      const known = findItem(state.barcodes[code]);
+      if (known) {
+        Object.assign(line, { name: known.name, category: known.category, location: known.location });
+        setItem(line, known, '');
+        drawList();
+        status(`Added ${known.name}`);
+        return;
+      }
+      line.name = 'Looking up...';
+      drawList();
+      pending.push(barcodeLib.lookupProduct(code).then((p) => {
+        if (p.status === 'found') {
+          const category = S.guessCategory(`${p.tags} ${p.name}`);
+          Object.assign(line, {
+            name: p.name, notes: [p.brand, p.size].filter(Boolean).join(', '), category,
+            location: S.defaultLocation(category),
+          });
+          const it = bestNameMatch(p.name);
+          if (it) setItem(line, it, p.size);
+          status(`Added ${p.name}`);
+        } else {
+          line.name = '';
+          line.notes = `Barcode ${code}`;
+          status(p.status === 'error'
+            ? `Couldn't reach the product database for ${code} (offline?). Name it on the next screen.`
+            : `${code} isn't in the product database yet. Name it on the next screen and Larder will remember it.`);
+        }
+        drawList();
+      }));
+    },
+    stop() {
+      closed = true;
+      stopCamera?.();
+      stopCamera = null;
+      if (barcodeSession === session) barcodeSession = null;
+    },
+    async done() {
+      if (closed || finishing) return;
+      finishing = true;
+      stopCamera?.();
+      stopCamera = null;
+      status('Finishing lookups...');
+      await Promise.allSettled(pending);
+      if (closed) return; // cancelled while waiting
+      session.stop();
+      closeModal();
+      if (!lines.length) return;
+      for (const l of lines) if (!l.name) l.name = l.notes || `Barcode ${l.barcode}`;
+      ui.scan = { token: S.uid(), kind: 'items', phase: 'review', previews: [], fromBarcodes: true, data: { mode: 'add', lines } };
+      setTab('scan');
+    },
+  };
+  barcodeSession = session;
+
+  // Enter / "Done" on the phone keyboard adds the typed code instead of submitting the dialog.
+  document.getElementById('bc-manual').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const code = e.target.value.replace(/\D/g, '');
+    if (code) { session.add(code, true); e.target.value = ''; }
+  });
+
+  try {
+    barcodeLib = await import('./barcode.js');
+    if (closed) return;
+    const stop = await barcodeLib.startScanner(document.getElementById('bc-video'), (code) => session.add(code, false));
+    if (closed || finishing) { stop(); return; }
+    stopCamera = stop;
+    status('Point the camera at a barcode. To count two of something, scan it, move it away, scan again.');
+  } catch (err) {
+    if (closed) return;
+    const denied = err?.name === 'NotAllowedError';
+    status(denied ? 'Camera permission was refused. Type the numbers instead, or allow the camera in the browser settings.'
+      : `Camera unavailable (${err?.message || err}). Type the numbers instead.`);
+    barcodeLib ??= await import('./barcode.js').catch(() => null);
+  }
 }
 
 // ---------- Spend ----------
@@ -775,8 +1019,10 @@ function openSettings() {
     <div class="stack">
       <label class="field">Read photos with
         <select name="provider">
-          <option value="anthropic"${st.provider === 'local' ? '' : ' selected'}>Claude (Anthropic) - works on any device, a few cents a scan</option>
-          <option value="local"${st.provider === 'local' ? ' selected' : ''}>Qwen on this PC - free, only on the PC running it</option>
+          ${[['device', 'On this device (no AI) - free, text reading + barcodes'],
+    ['anthropic', 'Claude (Anthropic) - smartest, a few cents a scan'],
+    ['local', 'Qwen on this PC - free, only on the PC running it']]
+    .map(([v, label]) => `<option value="${v}"${st.provider === v ? ' selected' : ''}>${label}</option>`).join('')}
         </select></label>
       <label class="field">Anthropic API key
         <input type="password" name="apiKey" value="${esc(st.apiKey)}" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
@@ -797,7 +1043,7 @@ function openSettings() {
     </div>
     <div class="btn-row"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-close>Cancel</button></div>`, (fd) => {
     state.settings.apiKey = String(fd.get('apiKey') || '').trim();
-    state.settings.provider = fd.get('provider') === 'local' ? 'local' : 'anthropic';
+    state.settings.provider = ['device', 'anthropic', 'local'].includes(fd.get('provider')) ? fd.get('provider') : 'device';
     state.settings.localUrl = String(fd.get('localUrl') || '').trim() || 'http://127.0.0.1:8080';
     state.settings.currency = fd.get('currency');
     commit();
@@ -866,8 +1112,12 @@ function closeModal() {
   modalSubmit = null;
 }
 
+// Closing the dialog any way (button, Esc, backdrop) turns the camera off.
+dialog.addEventListener('close', () => { barcodeSession?.stop(); });
+
 modalForm.addEventListener('submit', (e) => {
   e.preventDefault();
+  if (barcodeSession) return; // the scanner has no submit; never let Enter discard a scan session
   if (modalSubmit && modalSubmit(new FormData(modalForm)) === false) return;
   closeModal();
 });
@@ -925,7 +1175,19 @@ document.addEventListener('click', (e) => {
     case 'restock': restockTicked(); break;
     case 'copy-list': copyList(); break;
     case 'pick': pickPhotos(el.dataset.kind, el.dataset.camera === '1'); break;
-    case 'scan-cancel': ui.scan = null; render(); break;
+    case 'barcodes': openBarcodeScanner(); break;
+    case 'bc-manual': {
+      const input = document.getElementById('bc-manual');
+      const code = input.value.replace(/\D/g, '');
+      if (barcodeSession && code) { barcodeSession.add(code, true); input.value = ''; }
+      break;
+    }
+    case 'bc-done': barcodeSession?.done(); break;
+    case 'scan-cancel':
+      ui.scan = null;
+      render();
+      import('./ocr.js').then((m) => m.cancelReading()).catch(() => {});
+      break;
     case 'scan-apply': applyScan(); break;
     case 'items-mode': ui.scan.data.mode = el.dataset.mode; render(); break;
     case 'month': ui.month = shiftMonth(ui.month, Number(el.dataset.delta)); render(); break;
@@ -948,7 +1210,7 @@ document.addEventListener('click', (e) => {
     case 'wipe':
       if (confirm('Erase all pantry items, lists and spending on this device? This cannot be undone.')) {
         const settings = state.settings;
-        state = { ...S.load(), items: [], purchases: [], extras: [], checked: {}, settings };
+        state = { ...S.load(), items: [], purchases: [], extras: [], checked: {}, aliases: {}, barcodes: {}, settings };
         commit(); closeModal(); render(); toast('All data erased');
       }
       break;

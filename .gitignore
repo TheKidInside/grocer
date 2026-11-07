@@ -1,3 +1,4 @@
 __pycache__/
 shots/
 *.log
+tests/fixtures/barcode.y4m

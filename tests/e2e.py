@@ -105,6 +105,10 @@ with sync_playwright() as p:
 
     # Scan a receipt (fake AI) -> review -> apply
     page.locator(".tabs button[data-tab=scan]").click()
+    check(page.get_by_role("button", name="Scan barcodes").is_visible(), "no-AI reader is the default (barcodes offered)")
+    page.locator("#open-settings").click()
+    page.select_option("select[name=provider]", "anthropic")
+    page.locator("#modal-body").get_by_role("button", name="Save").click()
     check(page.get_by_text("needs an Anthropic API key").is_visible(), "no-key notice")
     page.locator("#open-settings").click()
     page.fill("input[name=apiKey]", "sk-ant-test")
@@ -227,6 +231,135 @@ with sync_playwright() as p:
           "Qwen request carries the photo and the JSON schema")
     check(qpage.locator("[data-field=qty]").first.input_value() == "2", "countable qty rounded (2.4 cans -> 2)")
     check(qpage.locator("[data-head=store]").input_value() == "Qwen Mart", "Qwen result reaches the review screen")
+
+    # ---------- No-AI reader: receipt text rules (pure) ----------
+    dpage = browser.new_page(viewport={"width": 390, "height": 844}, service_workers="block")
+    dpage.on("pageerror", lambda e: errors.append(str(e)))
+    dpage.goto(BASE)
+    parsed = dpage.evaluate("""async () => {
+      const { parseReceiptText } = await import('./ocr.js');
+      const text = `FRESHWAY MARKET
+12 King St
+ABN 12 345 678 901
+06/11/2026 17:42 REG 03
+FC MILK 2L 3.80
+BANANAS CAVENDISH
+0.856 kg @ $3.90/kg 3.34
+EGGS FREE RANGE 12PK 7:20
+TIN TOMATOES 400G
+2 @ $2.50 5.00
+REUSABLE BAG 0.15
+LOYALTY DISCOUNT -1.00
+SUBTOTAL 49.99
+TOTAL 48.99
+EFTPOS 48.99
+GST INCLUDED IN TOTAL 2:22`;
+      const match = (name) => /milk/i.test(name) ? { id: 'milk', unit: 'L' } : null;
+      return parseReceiptText(text, { match }); }""")
+    got = [(l["name"], l["qty"], l["unit"], l["line_total"], l["skip"], l["match_id"]) for l in parsed["lines"]]
+    check(parsed["date"] == "2026-11-06" and parsed["total"] == 48.99 and parsed["store"] == "Freshway Market", f"receipt header ({parsed['store']}, {parsed['date']}, {parsed['total']})")
+    check(got == [("Fc Milk 2L", 2, "L", 3.8, False, "milk"), ("Bananas Cavendish", 0.856, "kg", 3.34, False, ""),
+                  ("Eggs Free Range 12pk", 1, "pcs", 7.2, False, ""), ("Tin Tomatoes 400g", 2, "pcs", 5, False, ""),
+                  ("Reusable Bag", 1, "pcs", 0.15, True, ""), ("Loyalty Discount", 1, "pcs", -1, True, "")], f"receipt lines {got}")
+    extra = dpage.evaluate("""async () => {
+      const { parseReceiptText, mergeTexts } = await import('./ocr.js');
+      const S = await import('./store.js');
+      const r = parseReceiptText(`SHOP
+MILK 3 x 1.50 4.50
+BANANAS
+0.856 kg NET @ $3.90/kg 3.34
+BIRTHDAY CARD 4.50
+CASHEWS 300G 7.00
+VISA CARD 19.34
+TOTAL (14 ITEMS) 19.34`, {});
+      return {
+        lines: r.lines.map(l => [l.name, l.qty, l.unit, l.line_total]), total: r.total,
+        merged: mergeTexts([`A 1.00
+B 2.00
+C 3.00`, `B 2.00
+C 3.00
+D 4.00`]),
+        packs: [S.packQty('380 g', 'g'), S.packQty('6 x 375 mL', 'L'), S.packQty('2 L', 'pcs'), S.packQty('1.5kg', 'g')],
+        keys: [S.aliasKey('MILK 1.5L 3.20'), S.aliasKey('MILK 0.6L 1.90'), S.aliasKey('TIN TOM 2 @ $2.50 5.00')],
+        choc: S.guessCategory('MILK CHOCOLATE 200G'),
+      }; }""")
+    check(extra["lines"] == [["Milk", 3, "pcs", 4.5], ["Bananas", 0.856, "kg", 3.34], ["Birthday Card", 1, "pcs", 4.5], ["Cashews 300g", 1, "pcs", 7]]
+          and extra["total"] == 19.34, f"parser: '3 x', 'kg NET @', product words like CARD/CASH, TOTAL (n ITEMS) ({extra['lines']}, {extra['total']})")
+    check(extra["merged"] == "A 1.00\nB 2.00\nC 3.00\nD 4.00", "overlapping photos merged without duplicates")
+    check(extra["packs"] == [380, 2.25, None, 1500], f"pack sizes ({extra['packs']})")
+    check(extra["keys"][0] != extra["keys"][1] and extra["keys"][2] == "TIN TOM", f"learned-line keys ({extra['keys']})")
+    check(extra["choc"] == "Snacks", "milk chocolate is a snack, not milk")
+    check(dpage.evaluate("import('./barcode.js').then(b => b.validGtin('01234565'))"), "UPC-E barcodes accepted")
+    cats = dpage.evaluate("""async () => { const S = await import('./store.js');
+      return ['FC MILK 2L', 'TIN TOMATOES 400G', 'NAPPIES SZ4', 'SOURDOUGH LOAF', 'BANANAS', 'beverages sports-drinks'].map(S.guessCategory); }""")
+    check(cats == ["Dairy & Eggs", "Pantry", "Baby", "Bakery", "Produce", "Drinks"], f"category guesses {cats}")
+    check(dpage.evaluate("import('./barcode.js').then(b => [b.validGtin('9300650658516'), b.validGtin('9300650658517'), b.validGtin('12345')])") == [True, False, False], "barcode check digit")
+
+    # ---------- No-AI reader: real on-device text reading of a receipt photo ----------
+    dpage.evaluate("localStorage.clear(); sessionStorage.clear()")
+    dpage.reload()
+    dpage.get_by_role("button", name="Load demo data").click()
+    dpage.locator(".tabs button[data-tab=scan]").click()
+    with dpage.expect_file_chooser() as fc:
+        dpage.get_by_role("button", name="Choose photos").first.click()
+    fc.value.set_files(str(Path(__file__).with_name("fixtures") / "receipt.jpg"))
+    dpage.get_by_text("Check the receipt").wait_for(timeout=120000)
+    names = [x.input_value() for x in dpage.locator("[data-field=name]").all()]
+    matched = [x.locator("option:checked").inner_text() for x in dpage.locator("[data-field=match]").all()]
+    check(dpage.locator("[data-head=total]").input_value() == "48.99", "on-device read: total 48.99")
+    check(len(names) == 8 and "Tin Tomatoes 400g" in names, f"on-device read: 8 lines ({names})")
+    check(matched[0].startswith("Milk") and matched[3].startswith("Eggs") and matched[5].startswith("Nappies"), f"on-device read: pantry matches ({matched})")
+    check(dpage.locator("[data-field=qty]").nth(0).input_value() == "2", "2L milk bottle counts as 2 L")
+    dpage.get_by_role("button", name="Save to pantry & spending").click()
+    dpage.get_by_text("Freshway Market").first.wait_for()
+    # The hard receipt (long, faint, tilted, uneven light): straightened + black/white first
+    dpage.locator(".tabs button[data-tab=scan]").click()
+    with dpage.expect_file_chooser() as fc:
+        dpage.get_by_role("button", name="Choose photos").first.click()
+    fc.value.set_files(str(Path(__file__).with_name("fixtures") / "hard_receipt.jpg"))
+    dpage.get_by_text("Check the receipt").wait_for(timeout=120000)
+    truth = json.loads((Path(__file__).with_name("fixtures") / "hard_receipt.json").read_text())
+    paid = {round(float(x.input_value()), 2) for x in dpage.locator("[data-field=lineTotal]").all()}
+    hits = sum(1 for it in truth["items"] if round(it["price"], 2) in paid)
+    check(hits >= 26 and float(dpage.locator("[data-head=total]").input_value()) == truth["total"], f"hard receipt: {hits}/28 prices, total right")
+    dpage.get_by_role("button", name="Discard").click()
+
+    # Second time, the tomatoes line was learned: it matches the item created the first time
+    dpage.locator(".tabs button[data-tab=scan]").click()
+    with dpage.expect_file_chooser() as fc:
+        dpage.get_by_role("button", name="Choose photos").first.click()
+    fc.value.set_files(str(Path(__file__).with_name("fixtures") / "receipt.jpg"))
+    dpage.get_by_text("Check the receipt").wait_for(timeout=120000)
+    tom = dpage.locator(".review-line", has=dpage.locator(".receipt-text", has_text="TIN TOMATOES")).locator("[data-field=match] option:checked").inner_text()
+    check(tom.startswith("Tin Tomatoes"), f"learned line matches next time ({tom})")
+    dpage.get_by_role("button", name="Discard").click()
+
+    # ---------- No-AI reader: barcodes typed in, looked up in a faked Open Food Facts ----------
+    def fake_off(route):
+        code = route.request.url.split("/product/")[1].split(".json")[0]
+        body = {"status": 1, "product": {"product_name": "Vegemite", "brands": "Bega", "quantity": "380 g", "categories_tags": ["en:spreads", "en:yeast-extract-spreads"]}}             if code == "9300650658516" else {"status": 0}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+    dpage.route("https://world.openfoodfacts.org/**", fake_off)
+    dpage.get_by_role("button", name="Scan barcodes").click()
+    for code in ["9300650658516", "9300650658516", "4800361339148"]:
+        dpage.fill("#bc-manual", code)
+        dpage.locator("[data-act=bc-manual]").click()
+    dpage.fill("#bc-manual", "1234")
+    dpage.locator("[data-act=bc-manual]").click()
+    dpage.get_by_role("button", name="Done").click()
+    dpage.get_by_text("Check the groceries").wait_for()
+    names = [x.input_value() for x in dpage.locator("[data-field=name]").all()]
+    qtys = [x.input_value() for x in dpage.locator("[data-field=qty]").all()]
+    check(names == ["Vegemite", "Barcode 4800361339148"] and qtys == ["2", "1"], f"barcodes: found + unknown, repeat scan counts up ({names}, {qtys})")
+    dpage.locator("[data-field=name]").nth(1).fill("Pancit canton")
+    dpage.get_by_role("button", name="Save to pantry").click()
+    check(dpage.locator(".row", has_text="Pancit canton").count() == 1 and dpage.locator(".row", has_text="Vegemite").count() == 1, "barcode items added")
+    dpage.locator(".tabs button[data-tab=scan]").click()
+    dpage.get_by_role("button", name="Scan barcodes").click()
+    dpage.fill("#bc-manual", "4800361339148")
+    dpage.locator("[data-act=bc-manual]").click()
+    check("Pancit canton" in dpage.locator("#bc-list").inner_text(), "unknown barcode remembered after naming it")
+    dpage.get_by_role("button", name="Cancel").click()
 
     browser.close()
 

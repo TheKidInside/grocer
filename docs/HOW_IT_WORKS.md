@@ -38,8 +38,14 @@ Why `start.cmd` instead of double-clicking `index.html`: the app uses ES modules
        │
   UI             app.js       four tabs rendered from one state object, plus events
        │
-  AI (lazy)      ai.js        shrink a photo, send it to Claude, get JSON back
+  READERS (lazy) ai.js        shrink a photo; Claude or Qwen read it, return JSON
+                 ocr.js       no-AI receipts: read text on the device, rules -> lines
+                 barcode.js   no-AI groceries: camera barcodes + Open Food Facts
 ```
+
+All three readers return the **same shape** (`{store, date, total, lines[]}` for
+a receipt), so the review screen never knows which one answered. Analogy: three
+cashiers at different tills, one shared docket format.
 
 **The rule: `store.js` knows nothing about the screen.** `statusOf`, `needOf`,
 `stepOf` are plain functions of an item. That is why the shopping list never
@@ -140,6 +146,48 @@ pantry, list and spend views therefore work offline and never download the SDK.
   saved data can't even be parsed, `load()` copies it to a `larder.v1.corrupt-*`
   key before starting fresh, so nothing is silently overwritten.
 
+### `ocr.js` (no-AI receipts)
+- `readReceiptText` loads Tesseract.js (an open-source text reader that runs in
+  the browser; first use downloads it once) and reads each photo in turn.
+- Before reading, `ai.prepareImage(..., { forText: true })` runs `textprep.js`:
+  it **straightens** the photo (tries tilts from -12 to +12 degrees and keeps the
+  one where text rows line up best) and turns it **black on white** by comparing
+  each pixel with its own neighbourhood, which cancels shadows and faint
+  thermal print. On the long, tilted, unevenly lit test receipt this took the
+  reader from 15 to 28 of 28 prices (`tests/ocr_bench.py` measures it).
+- `mergeTexts` joins photos of a long receipt and drops the overlapping lines.
+- `parseReceiptText` is pure rules, so it is unit-tested with plain text:
+  - a line ending in a price is an item (`PRICE_END`); OCR's `7:20` is read as 7.20;
+  - a quantity line (`2 @ $2.50`, `0.856 kg @ $3.90/kg`) belongs to the name line
+    above it (`pending`);
+  - the `TOTAL` line ends the items; header/footer lines (ABN, times, GST,
+    EFTPOS) are ignored; bags, discounts and loyalty lines come in unticked;
+  - `fitQty` turns "FC MILK 2L" x1 into 2 L when the pantry counts milk in L.
+- Matching (in app.js): `matchReceiptLine` first checks `state.aliases`, the
+  table of lines you saved before (keyed by `aliasKey`, which strips prices and
+  counts but keeps sizes like 2L). Then `bestNameMatch`: a pantry item matches
+  when every word of its name appears in the line ("Milk" in "FC MILK 2L").
+- Learning happens in `applyScan`: every saved receipt line writes
+  `aliases[key] = item id`. Correct a match once; it sticks. This works for all
+  three readers, not just the no-AI one.
+
+### `barcode.js` (no-AI groceries)
+- `startScanner` uses the browser's own `BarcodeDetector` where it exists
+  (Android Chrome) and the ZXing library otherwise (iPhone Safari, desktop).
+- `validGtin` checks the barcode's check digit (expanding short UPC-E codes
+  first), so misreads and QR codes are ignored.
+- `lookupProduct` asks Open Food Facts (free public database) for name, brand,
+  size and categories. `guessCategory` (store.js) maps those to Larder's
+  categories by keywords.
+- In app.js, `openBarcodeScanner` collects scans into a list (same code twice =
+  qty 2; holding one in view counts once), then hands them to the normal
+  groceries review screen. Saving writes `barcodes[code] = item id` and
+  `packs[code]` (what one scan adds - 380 for a 380 g jar when you count that
+  item in grams), so a product scans straight to your item next time.
+- Matching by name is shown as "matched by name - check" on the review screen,
+  and refuses obvious cross-category hits ("Milk" vs MILK CHOCOLATE). Learned
+  lines also match when the reader gets one or two letters different.
+
 ### `sw.js`
 A service worker that makes the hosted app open offline (in a store with no
 signal). Strategy is *stale-while-revalidate*: serve the cached file instantly,
@@ -206,6 +254,9 @@ dev on `localhost` always gets fresh files.
 
 - **Two copies open at once** (browser tab + installed app) stay in step via the
   `storage` event: when one saves, the other reloads its state.
+- **No-AI receipt reading** depends on photo quality: flat, well lit, whole
+  receipt in frame. The review screen has a "Text read from the photo" panel to
+  see what it saw.
 - **Per-device data.** Phone and laptop each have their own pantry. Use Settings
   -> Export/Import to move data. Shared household sync would need a backend
   (Firebase, as in Stash/Patch).
