@@ -189,6 +189,18 @@ pantry, list and spend views therefore work offline and never download the SDK.
 - Learning happens in `applyScan`: every saved receipt line writes
   `aliases[key] = item id`. Correct a match once; it sticks. This works for all
   three readers, not just the no-AI one.
+- **Renames** (`state.renames`, the "Remembered renames" block in app.js) work one
+  level up: they map what a reader *called* a product ("Bega Peanut butter 375g")
+  to what *you* call it ("Peanut Butter Crunchy"), keyed by `aliasKey`. Aliases
+  only help when the same printed line comes back; renames also catch the same
+  product printed differently, read by another reader, or scanned by barcode.
+  - learned on Save from the review screen: a name you typed (`learnName`), or an
+    item you picked in "Pantry item" (`picked`) - never from automatic guesses;
+  - learned when you rename an item in the pantry (`renameItem` records old -> new);
+  - applied in `normalizeReceipt` / `normalizeItems` / the barcode lookup
+    (`yourName`), and a line whose name equals a pantry item's name (`itemNamed`)
+    feeds that item instead of creating a duplicate;
+  - typing a new name on a matched line renames the pantry item too.
 
 ### `phnames.js` (Philippine receipt names)
 Puregold/SM receipts squeeze each product into ~20 characters: `PF CB210G`,

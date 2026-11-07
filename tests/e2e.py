@@ -24,7 +24,7 @@ export async function readReceipt(key, images, items) {
   const milk = items.find(i => i.name === 'Milk');
   return { store: 'Test Mart', date: '2026-11-06', total: 20.5, lines: [
     { receipt_text: 'FC MILK 2L', name: 'Milk', category: 'Dairy & Eggs', qty: 2, unit: 'L', line_total: 3.8, match_id: milk ? milk.id : '', skip: false },
-    { receipt_text: 'SOURDOUGH', name: 'Sourdough bread', category: 'Bakery', qty: 1, unit: 'pcs', line_total: 6.5, match_id: '', skip: false },
+    { receipt_text: globalThis.__printed || 'SOURDOUGH', name: 'Sourdough bread', category: 'Bakery', qty: 1, unit: 'pcs', line_total: 6.5, match_id: '', skip: false },
     { receipt_text: 'BAG 0.15', name: 'Bag', category: 'Other', qty: 1, unit: 'pcs', line_total: 0.15, match_id: 'bogus', skip: true },
   ]};
 }
@@ -155,6 +155,57 @@ with sync_playwright() as p:
     page.get_by_text("Check the groceries").wait_for()
     page.get_by_role("button", name="Save to pantry").click()
     check(page.locator(".row", has_text="Peanut butter").count() == 1, "item photo adds peanut butter")
+
+    # Renames are remembered: rename on the review screen, then the next scan uses your name
+    def scan_items():
+        page.locator(".tabs button[data-tab=scan]").click()
+        with page.expect_file_chooser() as fc:
+            page.get_by_role("button", name="Choose photos").nth(1).click()
+        fc.value.set_files({"name": "i.jpg", "mimeType": "image/jpeg", "buffer": b"x"})
+        page.get_by_text("Check the groceries").wait_for()
+    scan_items()
+    first = page.locator("[data-field=name]").first
+    check(first.input_value() == "Bega Peanut butter 375g", f"same product feeds the existing item ({first.input_value()})")
+    first.fill("Peanut Butter Crunchy")
+    page.get_by_role("button", name="Save to pantry").click()
+    check(page.locator(".row", has_text="Peanut Butter Crunchy").count() == 1 and page.locator(".row", has_text="Bega").count() == 0,
+          "renaming on the review screen renames the pantry item")
+    scan_items()
+    first = page.locator("[data-field=name]").first
+    picked = page.locator("[data-field=match]").first.locator("option:checked").inner_text()
+    check(first.input_value() == "Peanut Butter Crunchy" and picked.startswith("Peanut Butter Crunchy"), f"next scan uses the remembered name ({first.input_value()}, {picked})")
+    page.get_by_role("button", name="Save to pantry").click()
+    check(page.locator(".row", has_text="Peanut Butter Crunchy").count() == 1, "no duplicate item after the rename")
+    check(page.evaluate("JSON.parse(localStorage.getItem('larder.v1')).renames['BEGA PEANUT BUTTER 375G']") == "Peanut Butter Crunchy", "rename stored in data")
+
+    # Receipts too, even when the same product is printed differently next time
+    def scan_receipt(printed):
+        page.evaluate(f"globalThis.__printed = {printed!r}")
+        page.locator(".tabs button[data-tab=scan]").click()
+        with page.expect_file_chooser() as fc:
+            page.get_by_role("button", name="Choose photos").first.click()
+        fc.value.set_files({"name": "r.jpg", "mimeType": "image/jpeg", "buffer": b"x"})
+        page.get_by_text("Check the receipt").wait_for()
+        return page.locator(".review-line").nth(1)
+    page.locator(".tabs button[data-tab=pantry]").click()
+    page.locator(".row", has_text="Sourdough bread").locator("[data-act=edit-item]").click()
+    page.fill("input[name=name]", "Gardenia Sourdough")
+    page.locator("#modal-body").get_by_role("button", name="Save").click()
+    line = scan_receipt("SRDGH LOAF LGE")
+    name = line.locator("[data-field=name]").input_value()
+    picked = line.locator("[data-field=match] option:checked").inner_text()
+    check(name == "Gardenia Sourdough" and picked.startswith("Gardenia Sourdough"), f"receipt: pantry rename used for a differently printed line ({name}, {picked})")
+    line.locator("[data-field=name]").fill("Sourdough Big Loaf")
+    page.get_by_role("button", name="Save to pantry & spending").click()
+    page.get_by_text("Test Mart").first.wait_for()
+    line = scan_receipt("SOURDO XL 800G")
+    name = line.locator("[data-field=name]").input_value()
+    check(name == "Sourdough Big Loaf", f"receipt: review-screen rename used next time ({name})")
+    page.get_by_role("button", name="Save to pantry & spending").click()
+    page.get_by_text("Test Mart").first.wait_for()
+    page.locator(".tabs button[data-tab=pantry]").click()
+    check(page.locator(".row", has_text="Sourdough").count() == 1 and page.locator(".row", has_text="Sourdough Big Loaf").count() == 1,
+          "receipt: one sourdough item, under your latest name")
 
     # Count mode: two lines matched to one item add up instead of overwriting
     page.evaluate("globalThis.__count = true")

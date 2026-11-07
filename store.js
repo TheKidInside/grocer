@@ -24,6 +24,7 @@ function empty() {
     extras: [],     // one-off shopping list entries
     checked: {},    // shopping-list ticks, keyed 'item:<id>' / 'extra:<id>'
     aliases: {},    // receipt line (aliasKey) -> item id, learned from your corrections
+    renames: {},    // a reader's product name (aliasKey) -> the name you gave it
     barcodes: {},   // barcode -> item id
     packs: {},      // barcode -> quantity one scan adds, in the item's unit
     settings: { apiKey: '', provider: 'device', localUrl: 'http://127.0.0.1:8080', currency: guessCurrency(), theme: 'system' },
@@ -98,7 +99,9 @@ export function sanitize(data) {
   const barcodes = table(data?.barcodes);
   const packs = Object.fromEntries(Object.entries(isObj(data?.packs) ? data.packs : {})
     .filter(([k, v]) => barcodes[k] && num(v) > 0).map(([k, v]) => [k, num(v)]));
-  return { items, purchases, extras, aliases: table(data?.aliases), barcodes, packs };
+  const renames = Object.fromEntries(Object.entries(isObj(data?.renames) ? data.renames : {})
+    .filter(([k, v]) => k && typeof v === 'string' && v.trim()).map(([k, v]) => [k, v.trim().slice(0, 120)]));
+  return { items, purchases, extras, aliases: table(data?.aliases), renames, barcodes, packs };
 }
 
 export function save(state) {

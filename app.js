@@ -194,6 +194,7 @@ function openItemModal(existing) {
     if (!name) { toast('Give the item a name'); return false; }
     const low = Math.max(0, S.round(S.num(fd.get('low'))));
     S.changeUnit(i, fd.get('unit'));
+    if (existing) renameItem(i, name);
     Object.assign(i, {
       name,
       category: fd.get('category'),
@@ -426,22 +427,29 @@ function normalizeReceipt(r) {
     lines: (r.lines || []).map((l) => {
       // A line you saved on an earlier receipt wins over any reader's guess.
       const learned = l.skip ? '' : validId(state.barcodes[l.barcode]) || learnedItem(l.receipt_text);
-      const match = learned || validId(l.match_id);
+      // A product you renamed before gets your name, and the pantry item already called that.
+      const readName = String(l.name || l.receipt_text || 'Item').trim();
+      const renamed = l.skip ? readName : yourName(readName);
+      const byName = l.skip ? '' : itemNamed(renamed)?.id || '';
+      const match = learned || byName || validId(l.match_id);
       // The reader expressed qty for its own match; re-express it for the learned item.
       let line = l;
-      if (learned && learned !== l.match_id) {
-        const conv = S.convertQty(S.num(l.qty), l.unit, findItem(learned).unit);
+      if (match && match !== l.match_id) {
+        const conv = S.convertQty(S.num(l.qty), l.unit, findItem(match).unit);
         if (conv !== null) line = { ...l, qty: conv };
       }
+      const name = match ? findItem(match).name : renamed;
       return {
         include: !l.skip,
         receiptText: String(l.receipt_text || ''),
-        name: String(l.name || l.receipt_text || 'Item').trim(),
+        name,
+        readName,
+        shown: name,
         category: pick(CATEGORIES, l.category, 'Other'),
         ...qtyUnit(line, match),
         lineTotal: S.round(S.num(l.line_total), 2),
         match,
-        guess: !learned && !!l.guess && !!match,
+        guess: !learned && !byName && !!l.guess && !!match,
         check: !!l.check,
         barcode: /^\d{8,14}$/.test(l.barcode || '') ? l.barcode : '',
       };
@@ -453,11 +461,16 @@ function normalizeItems(r) {
   return {
     mode: 'add',
     lines: (r.items || []).map((l) => {
-      const match = validId(l.match_id);
+      const readName = fullName(l.brand, l.name, l.size) || 'Item';
+      const renamed = yourName(readName);
+      const match = validId(l.match_id) || itemNamed(renamed)?.id || '';
       const category = pick(CATEGORIES, l.category, 'Other');
+      const name = match ? findItem(match).name : renamed;
       return {
         include: true,
-        name: fullName(l.brand, l.name, l.size) || 'Item',
+        name,
+        readName,
+        shown: name,
         notes: [l.brand, l.size].filter(Boolean).join(', '),
         category,
         location: pick(LOCATIONS, l.location, S.defaultLocation(category)),
@@ -498,7 +511,7 @@ function matchSelect(i, line) {
 function receiptReview(s, thumbs) {
   const d = s.data;
   return `<h2>Check the receipt</h2>
-    <p class="muted">Fix anything misread and untick lines that shouldn't go in the pantry (they still count toward the total).</p>
+    <p class="muted">Fix anything misread and untick lines that shouldn't go in the pantry (they still count toward the total). Names you change are remembered for next time.</p>
     ${thumbs}
     <div class="card"><div class="grid3">
       <label class="field">Store<input type="text" data-head="store" value="${esc(d.store)}" autocomplete="off"></label>
@@ -603,6 +616,7 @@ function onScanField(el) {
     } else if (f === 'match') {
       line.match = el.value;
       const target = findItem(line.match);
+      if (target) { line.name = target.name; line.picked = true; } // picking an item names the product after it
       if (target && target.unit !== line.unit) {
         const converted = S.convertQty(line.qty, line.unit, target.unit);
         if (converted !== null) line.qty = converted;
@@ -628,8 +642,10 @@ function applyScan() {
   let updated = 0;
   // The pantry item a review line feeds, plus the line's qty in that item's unit.
   const target = (l, fields) => {
-    const item = l.match ? findItem(l.match) : null;
+    learnName(l);
+    const item = l.match ? findItem(l.match) : itemNamed(l.name);
     if (item) {
+      if (l.shown !== undefined && l.name.trim() && l.name !== l.shown) renameItem(item, l.name.trim());
       updated++;
       return { item, qty: S.convertQty(l.qty, l.unit, item.unit) ?? l.qty };
     }
@@ -684,6 +700,34 @@ function applyScan() {
   const msg = `${updated} updated, ${added} new`;
   if (s.kind === 'receipt') { setTab('spend'); toast(`Receipt saved: ${msg}`); }
   else { setTab('pantry'); toast(`Pantry updated: ${msg}`); }
+}
+
+// ---------- Remembered renames ----------
+// What a reader called a product -> the name you gave it, learned from the review
+// screen and from renaming items in the pantry. Keyed like receipt lines (aliasKey),
+// so "Datu Puti Adobo" and "DATU PUTI ADOBO" are the same entry.
+
+const renameKey = (name) => { const k = S.aliasKey(name); return k.length >= 3 ? k : ''; };
+const yourName = (name) => state.renames[renameKey(name)] || name;
+const itemNamed = (name) => {
+  const n = String(name || '').trim().toLowerCase();
+  return n ? state.items.find((it) => it.name.toLowerCase() === n) || null : null;
+};
+function rememberRename(from, to) {
+  const key = renameKey(from);
+  if (key && to && renameKey(to) !== key) S.remember(state.renames, key, to);
+  else if (key) delete state.renames[key]; // renamed back to what the reader says
+}
+// On save: a name you typed, or an item you picked, is what this product is called from now on.
+function learnName(l) {
+  if (l.shown === undefined || !l.readName) return;
+  const name = l.name.trim();
+  if (name && (name !== l.shown || l.picked)) rememberRename(l.readName, name);
+}
+function renameItem(item, name) {
+  if (item.name === name) return;
+  rememberRename(item.name, name);
+  item.name = name;
 }
 
 // ---------- Matching text to pantry items (no AI) ----------
@@ -821,12 +865,13 @@ async function openBarcodeScanner() {
       pending.push(barcodeLib.lookupProduct(code).then((p) => {
         if (p.status === 'found') {
           const category = S.guessCategory(`${p.tags} ${p.name}`);
-          const name = fullName(p.brand, p.name, p.size);
+          const readName = fullName(p.brand, p.name, p.size);
+          const name = yourName(readName);
           Object.assign(line, {
-            name, notes: [p.brand, p.size].filter(Boolean).join(', '), category,
+            name, readName, notes: [p.brand, p.size].filter(Boolean).join(', '), category,
             location: S.defaultLocation(category),
           });
-          const it = bestNameMatch(name);
+          const it = itemNamed(name) || bestNameMatch(name);
           if (it) setItem(line, it, p.size);
           status(`Added ${name}`);
         } else {
@@ -856,7 +901,11 @@ async function openBarcodeScanner() {
       session.stop();
       closeModal();
       if (!lines.length) return;
-      for (const l of lines) if (!l.name) l.name = l.notes || `Barcode ${l.barcode}`;
+      for (const l of lines) {
+        if (!l.name) l.name = l.notes || `Barcode ${l.barcode}`;
+        if (l.match) l.name = findItem(l.match)?.name || l.name;
+        l.shown = l.name;
+      }
       ui.scan = { token: S.uid(), kind: 'items', phase: 'review', previews: [], fromBarcodes: true, data: { mode: 'add', lines } };
       setTab('scan');
     },
@@ -1228,7 +1277,7 @@ document.addEventListener('click', (e) => {
     case 'wipe':
       if (confirm('Erase all pantry items, lists and spending on this device? This cannot be undone.')) {
         const settings = state.settings;
-        state = { ...S.load(), items: [], purchases: [], extras: [], checked: {}, aliases: {}, barcodes: {}, settings };
+        state = { ...S.load(), items: [], purchases: [], extras: [], checked: {}, aliases: {}, renames: {}, barcodes: {}, settings };
         commit(); closeModal(); render(); toast('All data erased');
       }
       break;
