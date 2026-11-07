@@ -169,7 +169,8 @@ async function callLocal(url, images, prompt, schema) {
       }),
     });
   } catch {
-    throw new AIError(`Could not reach Qwen at ${base}. Is start-qwen running on this PC? (A phone can't reach it.)`);
+    throw new AIError(`Could not reach Qwen at ${base}. Check that start-qwen is running on this PC, and that this site is allowed `
+      + '"Local network access" (click the icon left of the address bar). A phone can\'t reach it.');
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
