@@ -22,7 +22,7 @@ JS = """async ({ imgs }) => {
   const ocr = await import('./ocr.js');
   const images = [];
   for (const b64 of imgs) {
-    const blob = await (await fetch('data:image/jpeg;base64,' + b64)).blob();
+    const blob = await (await fetch('data:image/*;base64,' + b64)).blob();
     images.push(await ai.prepareImage(new File([blob], 'r.jpg', { type: 'image/jpeg' }), 3200, { forText: true }));
   }
   const t0 = performance.now();

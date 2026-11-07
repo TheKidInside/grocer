@@ -165,6 +165,15 @@ pantry, list and spend views therefore work offline and never download the SDK.
   **sequence of prices** (OCR reads prices more reliably than names). In the
   overlap the cleaner copy of each line wins, so a finger over a name in one
   photo is fixed by the next.
+- **Duplicates.** `joinPhotos` doesn't trust the order photos were picked in:
+  it repeatedly joins the two photos whose price sequences overlap most
+  (`relate` says whether one continues, precedes or sits inside the other), so
+  bottom-first, shuffled, or the same photo twice all give one copy of each
+  line. Prices one digit apart count as the same line for lining up. Anything
+  still repeated (same barcode, or same name and price) comes in unticked as
+  "repeat?", and the review screen warns if the same receipt (date + total, or
+  store + total) was already saved. `tests/score_receipt.py` measures found /
+  missing / duplicate lines on a real receipt for five ways of picking photos.
 - `reconcile` cross-checks "qty x unit price" against the line total (the same
   money printed twice) to catch digit slips: "11 x" for "1 x", "$2.50" read as
   "32.50", weights, ".89" for ".80". Lines it had to guess are marked "check

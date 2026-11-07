@@ -440,7 +440,8 @@ function normalizeReceipt(r) {
       }
       const name = match ? findItem(match).name : renamed;
       return {
-        include: !l.skip,
+        include: !l.skip && !l.duplicate,
+        duplicate: !!l.duplicate,
         receiptText: String(l.receipt_text || ''),
         name,
         readName,
@@ -508,9 +509,18 @@ function matchSelect(i, line) {
   </select>`;
 }
 
+// A receipt already saved: same date and total (to the cent), or same store and total.
+function sameReceiptSaved(d) {
+  if (!(d.total > 0)) return null;
+  return state.purchases.find((p) => p.source === 'receipt' && Math.abs(p.total - d.total) < 0.01
+    && (p.date === d.date || (d.store && p.store.toLowerCase() === d.store.toLowerCase()))) || null;
+}
+
 function receiptReview(s, thumbs) {
   const d = s.data;
+  const already = sameReceiptSaved(d);
   return `<h2>Check the receipt</h2>
+    ${already ? `<div class="notice"><b>This receipt looks already saved</b>: ${esc(already.store)}, ${esc(already.date)}, ${money(already.total)}. Saving it again would count the shopping twice; discard unless it really is a second trip.</div>` : ''}
     <p class="muted">Fix anything misread and untick lines that shouldn't go in the pantry (they still count toward the total). Names you change are remembered for next time.</p>
     ${thumbs}
     <div class="card"><div class="grid3">
@@ -524,7 +534,7 @@ function receiptReview(s, thumbs) {
           <input type="checkbox" class="check" data-line="${i}" data-field="include" aria-label="Add to pantry"${l.include ? ' checked' : ''}>
           <input type="text" data-line="${i}" data-field="name" value="${esc(l.name)}" aria-label="Name" autocomplete="off">
         </div>
-        ${l.receiptText ? `<div class="receipt-text">${esc(l.receiptText)}${l.guess ? ' <span class="pill low">matched by name - check</span>' : ''}${l.check ? ' <span class="pill low">check price</span>' : ''}</div>` : ''}
+        ${l.receiptText ? `<div class="receipt-text">${esc(l.receiptText)}${l.guess ? ' <span class="pill low">matched by name - check</span>' : ''}${l.check ? ' <span class="pill low">check price</span>' : ''}${l.duplicate ? ' <span class="pill low">repeat from overlapping photos? tick if you bought it twice</span>' : ''}</div>` : ''}
         <div class="review-grid four">
           <label class="field">Qty<input type="number" step="any" min="0" inputmode="decimal" data-line="${i}" data-field="qty" value="${l.qty}"></label>
           <label class="field">Unit<select data-line="${i}" data-field="unit">${options(UNITS, l.unit)}</select></label>

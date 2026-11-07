@@ -370,6 +370,51 @@ BDO CREDIT 9,114.33`]),
     check(extra["packs"] == [380, 2.25, None, 1500], f"pack sizes ({extra['packs']})")
     check(extra["keys"][0] != extra["keys"][1] and extra["keys"][2] == "TIN TOM", f"learned-line keys ({extra['keys']})")
     check(extra["choc"] == "Snacks", "milk chocolate is a snack, not milk")
+
+    # Long receipt in overlapping photos, picked in any order / one picked twice:
+    # every line exactly once. Photo B re-reads two of A's lines with a slip
+    # ("141.59" for "141.50", name garbled by a finger) and C overlaps B.
+    joined = dpage.evaluate("""async () => {
+      const { parseReceiptPhotos } = await import('./ocr.js');
+      const A = `4800361415293 MILO 48G
+1 x 148.00 148.00 V
+4800000000017 SUGAR 1KG
+1 x 77.00 77.00 V
+4800000000024 FLOUR 800G
+1 x 87.10 87.10 V
+4800000000031 MYSKYFLK 25G
+1 x 141.50 141.50 V
+4800000000048 CHEESE 25G
+1 x 69.55 69.55 V`;
+      const B = `Fe. LK 25G
+1 x 141.59 141.59 V
+4800000000048 CHEESE 25G
+1 x 69.55 69.55 V
+4800000000055 MALLOWS 100G
+1 x 39.50 39.50 V
+4800000000062 QUAKE OVRL
+1 x 85.25 85.25 V
+4800000000079 CHS CAKE
+1 x 105.50 105.50 V`;
+      const C = `4800000000062 QUAKE OVRL
+1 x 85.25 85.25 V
+4800000000079 CHS CAKE
+1 x 105.50 105.50 V
+4800000000086 RIDGES BBQ
+1 x 34.55 34.55 V
+Subtotal 788.45
+Total Amt Due 788.45`;
+      const names = (ps) => parseReceiptPhotos(ps).lines.filter((l) => !l.duplicate).map((l) => `${l.printed} ${l.line_total}`);
+      return {
+        inOrder: names([A, B, C]), reversed: names([C, B, A]), shuffled: names([B, C, A]),
+        twice: names([A, B, B, C]), again: names([A, B, C, A]), total: parseReceiptPhotos([C, A, B]).total,
+      };
+    }""")
+    want = ["MILO 48G 148", "SUGAR 1KG 77", "FLOUR 800G 87.1", "MYSKYFLK 25G 141.5", "CHEESE 25G 69.55",
+            "MALLOWS 100G 39.5", "QUAKE OVRL 85.25", "CHS CAKE 105.5", "RIDGES BBQ 34.55"]
+    for label in ["inOrder", "reversed", "shuffled", "twice", "again"]:
+        check(joined[label] == want, f"overlapping photos ({label}): each line once ({joined[label]})")
+    check(joined["total"] == 788.45, "total found whichever photo it is in")
     ph = dpage.evaluate("""async () => { const { expandName, fullName } = await import('./phnames.js');
       return { names: ['PF CB210G', 'HNTSPRK BNS230G DP', 'ALASKA COND 545G', 'WKHCAKEW-SYRUP400G', 'DOWNY GARDEN BLOOM 1.4L',
         'CREAMSILK COND STD 180ML', 'LUCKY ME PANCIT CANTON CHILIMANSI 60G', 'MYSKYFLK25GX24S', 'GG TRTI CHESSE 25G'].map(t => expandName(t)?.name),
@@ -423,6 +468,7 @@ BDO CREDIT 9,114.33`]),
     dpage.get_by_text("Check the receipt").wait_for(timeout=120000)
     tom = dpage.locator(".review-line", has=dpage.locator(".receipt-text", has_text="TIN TOMATOES")).locator("[data-field=match] option:checked").inner_text()
     check(tom.startswith("Tin Tomatoes"), f"learned line matches next time ({tom})")
+    check(dpage.get_by_text("This receipt looks already saved").is_visible(), "warns when the same receipt is scanned again")
     dpage.get_by_role("button", name="Discard").click()
 
     # ---------- No-AI reader: barcodes typed in, looked up in a faked Open Food Facts ----------

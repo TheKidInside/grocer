@@ -290,79 +290,196 @@ export function parseReceiptText(text, { dayFirst = true, match = () => null } =
 }
 
 // Several photos of one long receipt -> one receipt. Each photo is read on its
-// own, then consecutive photos are lined up by their sequence of prices (which
-// OCR reads more reliably than names); in the overlap the cleaner copy of each
-// line is kept - a finger over the name in one photo is usually clear in the next.
+// own; then photos are joined wherever their lines overlap, in whatever order
+// they were picked (and a photo picked twice adds nothing). Prices are what
+// line photos up - OCR reads them more reliably than names - and in the overlap
+// the cleaner copy of each line is kept: a finger over a name in one photo is
+// usually clear in the next.
 export function parseReceiptPhotos(texts, opts = {}) {
   const parts = texts.map((t) => parseReceiptText(t, opts));
-  let lines = [];
-  for (const part of parts) lines = mergeLines(lines, part.lines);
+  const lines = flagRepeats(joinPhotos(parts.map((p) => p.lines)));
+  const counted = lines.filter((l) => !l.duplicate);
   const totals = parts.map((p) => p.total).filter((t) => t !== null);
-  const sum = lines.reduce((t, l) => t + l.line_total, 0);
+  const sum = counted.reduce((t, l) => t + l.line_total, 0);
   let date = parts.find((p) => p.date)?.date || '';
   const age = date ? -daysUntil(date) : null;
   if (age === null || age < -1 || age > 45) date = today(); // misread dates (2026-1.1-) are usually far off
-  // A total nowhere near what the lines add up to was misread ("4.33" for
+  // A total far below what the lines add up to was misread ("4.33" for
   // "9,114.33"): use the lines' sum and say so on the review screen.
   let total = totals.length ? pickTotal(totals, sum) : null;
   const plausible = (t) => sum <= 0 || t >= sum * 0.75; // larger is fine: lines were missed
   if (total !== null && !plausible(total)) total = totals.find(plausible) ?? null;
-  const totalGuessed = total === null && lines.length > 0;
   return {
     store: parts.find((p) => p.store)?.store || '',
     date,
     total: round(total ?? sum, 2),
-    totalGuessed,
+    totalGuessed: total === null && lines.length > 0,
     itemsCount: parts.map((p) => p.itemsCount).find((n) => n) ?? null,
     lines,
   };
 }
 
 const samePrice = (a, b) => Math.abs(a.line_total - b.line_total) < 0.011;
+// For lining photos up: equal, or one digit apart ("141.59" vs "141.50",
+// "198.25" vs "108.25") - the same printed price read twice with one slip.
+function nearPrice(a, b) {
+  if (samePrice(a, b)) return true;
+  const x = a.line_total.toFixed(2);
+  const y = b.line_total.toFixed(2);
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let k = 0; k < x.length; k++) if (x[k] !== y[k] && ++diff > 1) return false;
+  return true;
+}
 // Judged on the product as printed, not the expanded name ("Oishi Salted Egg Chips"
 // is longer than "OKI SLT ECGS" but was read no better).
 const quality = (l) => ((l.printed ?? l.name).match(/[a-z]/gi) || []).length + (l.barcode ? 12 : 0) - (l.check ? 4 : 0);
+const better = (x, y) => (quality(y) > quality(x) ? y : x);
 
-// prev + next where next's first lines repeat prev's last ones. Like a text
-// diff: find the longest in-order run of equal prices between prev's tail and
-// next's head; matched pairs, and unmatched lines sitting between them, are the
-// same receipt lines read twice - keep the cleaner copy of each.
-export function mergeLines(prev, next) {
-  if (!prev.length) return next.slice();
-  const off = Math.max(0, prev.length - 80);
-  const A = prev.slice(off);
-  const B = next.slice(0, 80);
-  const L = Array.from({ length: A.length + 1 }, () => new Uint16Array(B.length + 1));
-  for (let i = A.length - 1; i >= 0; i--) {
-    for (let j = B.length - 1; j >= 0; j--) {
-      L[i][j] = samePrice(A[i], B[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+// Longest in-order run of equal prices between two photos (like a text diff).
+function alignPrices(a, b) {
+  const L = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      L[i][j] = nearPrice(a[i], b[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
     }
   }
   const pairs = [];
-  for (let i = 0, j = 0; i < A.length && j < B.length;) {
-    if (samePrice(A[i], B[j]) && L[i][j] === L[i + 1][j + 1] + 1) { pairs.push([i, j]); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) i++; else j++;
+  for (let i = 0, j = 0; i < a.length && j < b.length;) {
+    if (nearPrice(a[i], b[j]) && L[i][j] === L[i + 1][j + 1] + 1) { pairs.push([i, j]); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) i++; else j++;
   }
-  // A real overlap starts at next's top and runs to prev's bottom (give or take
-  // a few lines cut off at the photo edges). Otherwise the photos don't overlap.
-  const real = pairs.filter(([, j]) => j < 40);
-  const sure = real.length >= 2 || (real.length === 1 && (() => {
-    const [a, b] = real[0]; // a one-line overlap only counts when it is plainly the same line
-    return (A[a].barcode && A[a].barcode === B[b].barcode) || A[a].name.toLowerCase() === B[b].name.toLowerCase();
-  })());
-  if (!sure || real[0][1] > 6 || A.length - 1 - real[real.length - 1][0] > 6) return [...prev, ...next];
+  return pairs;
+}
 
-  const out = prev.slice();
-  const take = (a, b) => { if (quality(B[b]) > quality(out[off + a])) out[off + a] = B[b]; };
-  for (let k = 0; k < real.length; k++) {
-    const [a, b] = real[k];
-    take(a, b);
-    const [na, nb] = real[k + 1] || [A.length, B.length];
-    const gap = Math.min(na - a - 1, nb - b - 1, k + 1 < real.length ? Infinity : A.length - a - 1);
-    for (let g = 1; g <= gap; g++) take(a + g, b + g); // misread on both sides: same position
+// How photo b relates to photo a: 'inside' (b is all within a), 'after' (b
+// continues a), 'before' (b comes first) or null (no real overlap).
+// A run of equal prices only counts if it is dense - scattered matches of
+// common prices (60.00, 25.00) between unrelated parts mean nothing.
+export function relate(a, b) {
+  const pairs = alignPrices(a, b);
+  const same = (x, y) => (x.barcode && x.barcode === y.barcode) || (x.printed ?? x.name).toLowerCase() === (y.printed ?? y.name).toLowerCase();
+  // a single shared line counts only when it is plainly the same line, exactly
+  // where one photo ends and the next begins
+  if (pairs.length === 1) {
+    const [i, j] = pairs[0];
+    if (!same(a[i], b[j])) return null;
+    if (i === a.length - 1 && j === 0) return { kind: 'after', pairs };
+    if (j === b.length - 1 && i === 0) return { kind: 'before', pairs };
+    return null;
   }
-  const [la, lb] = real[real.length - 1];
-  const tailPaired = Math.min(A.length - la - 1, B.length - lb - 1);
-  return [...out, ...next.slice(lb + 1 + tailPaired)];
+  if (pairs.length < 2) return null;
+  const spanA = pairs[pairs.length - 1][0] - pairs[0][0] + 1;
+  const spanB = pairs[pairs.length - 1][1] - pairs[0][1] + 1;
+  if (pairs.length < 0.4 * Math.max(spanA, spanB)) return null; // not a dense block
+  if (pairs.length < 3 && !pairs.every(([i, j]) => same(a[i], b[j]))) return null;
+  const edge = 6; // lines lost at a photo's cut edge
+  const headB = pairs[0][1];
+  const tailB = b.length - 1 - pairs[pairs.length - 1][1];
+  const headA = pairs[0][0];
+  const tailA = a.length - 1 - pairs[pairs.length - 1][0];
+  if (headB <= edge && tailB <= edge) return { kind: 'inside', pairs };
+  if (headA <= edge && tailA <= edge) return { kind: 'contains', pairs };
+  if (tailA <= edge && headB <= edge) return { kind: 'after', pairs };
+  if (tailB <= edge && headA <= edge) return { kind: 'before', pairs };
+  return null;
+}
+
+// Name likeness, 0..1 (shared letter pairs): "NESTLE NONFATMLK1L" vs "Fe." ~ 0.
+function likeness(x, y) {
+  const grams = (s) => { const t = s.toUpperCase().replace(/[^A-Z0-9]/g, ''); const g = new Set(); for (let k = 0; k < t.length - 1; k++) g.add(t.slice(k, k + 2)); return g; };
+  const a = grams(x.receipt_text || x.name);
+  const b = grams(y.receipt_text || y.name);
+  if (!a.size || !b.size) return 0;
+  let n = 0;
+  for (const g of a) if (b.has(g)) n++;
+  return (2 * n) / (a.size + b.size);
+}
+const sameLine = (x, y) => nearPrice(x, y) || likeness(x, y) >= 0.45 || (x.barcode && x.barcode === y.barcode);
+
+// Join two photos that overlap, `second` continuing (or sitting inside) `first`.
+// Lines between matched prices were read in both photos: pair them by name or
+// price and keep the cleaner copy. A line only one photo has is kept when it
+// is a readable line and resembles nothing nearby in the other photo (so it is
+// a line the other photo missed, not a garbled second copy).
+function weave(first, second, pairs) {
+  const out = [];
+  const settle = (as, bs) => {
+    const usedB = new Set();
+    const merged = [];
+    for (const x of as) {
+      const k = bs.findIndex((y, idx) => !usedB.has(idx) && sameLine(x, y));
+      if (k >= 0) { usedB.add(k); merged.push(better(x, bs[k])); } else merged.push(x);
+    }
+    const leftovers = bs.filter((_, idx) => !usedB.has(idx));
+    // keep a leftover only if it is a real-looking line not echoed on the other side
+    for (const y of leftovers) {
+      const letters = ((y.printed ?? y.name).match(/[a-z]/gi) || []).length;
+      const echoed = as.some((x) => likeness(x, y) >= 0.3);
+      if (letters >= 4 && !echoed) merged.push(y);
+      else if (!as.length && letters >= 4) merged.push(y);
+    }
+    // unmatched lines from `as` with no letters are junk from a cut edge
+    return merged.filter((l) => ((l.printed ?? l.name).match(/[a-z]/gi) || []).length >= 3 || l.barcode);
+  };
+  let i = 0;
+  let j = 0;
+  for (const [pi, pj] of pairs) {
+    out.push(...settle(first.slice(i, pi), second.slice(j, pj)));
+    out.push(better(first[pi], second[pj]));
+    i = pi + 1;
+    j = pj + 1;
+  }
+  // after the last match: the overlap continues for a few lines, then only
+  // `second` (if it continues) or only `first` (if second sat inside it) remains
+  const ta = first.slice(i);
+  const tb = second.slice(j);
+  const n = Math.min(ta.length, tb.length, 6);
+  out.push(...settle(ta.slice(0, n), tb.slice(0, n)));
+  out.push(...ta.slice(n), ...tb.slice(n));
+  return out;
+}
+
+export function joinPhotos(photos) {
+  let parts = photos.filter((p) => p.length);
+  if (parts.length < 2) return parts[0]?.slice() || [];
+  // Repeatedly join the two photos with the strongest overlap.
+  for (;;) {
+    let best = null;
+    for (let x = 0; x < parts.length; x++) {
+      for (let y = 0; y < parts.length; y++) {
+        if (x === y) continue;
+        const r = relate(parts[x], parts[y]);
+        if (r && (!best || r.pairs.length > best.r.pairs.length)) best = { x, y, r };
+      }
+    }
+    if (!best) break;
+    const { x, y, r } = best;
+    const a = parts[x];
+    const b = parts[y];
+    let joined;
+    if (r.kind === 'after' || r.kind === 'inside') joined = weave(a, b, r.pairs);
+    else joined = weave(b, a, r.pairs.map(([i, j]) => [j, i])); // b first, or b holds a
+    parts = parts.filter((_, k) => k !== x && k !== y);
+    parts.splice(Math.min(x, y), 0, joined);
+  }
+  return parts.flat(); // photos that overlap nothing: kept in the order picked
+}
+
+// Mark lines that look like the same purchase twice (same barcode, or same name
+// and price) - a leftover from overlapping photos. Shops print a real repeat as
+// "2 x", so these come in unticked with a note, one tick away if it was real.
+function flagRepeats(lines) {
+  const seen = new Set();
+  return lines.map((l) => {
+    const key = l.barcode ? `b${l.barcode}` : `n${l.name.toLowerCase().replace(/[^a-z0-9]/g, '')}|${l.line_total}`;
+    if (l.skip || !seen.has(key)) { seen.add(key); return l; }
+    return { ...l, duplicate: true };
+  });
+}
+
+// Kept for older callers/tests: join photos given in reading order.
+export function mergeLines(prev, next) {
+  return joinPhotos([prev, next]);
 }
 
 // Express a receipt quantity in the pantry item's unit: "FC MILK 2L" x1 against
