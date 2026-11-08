@@ -32,6 +32,7 @@ with sync_playwright() as p:
     page.evaluate("localStorage.clear(); sessionStorage.clear()")
     page.reload()
     page.locator(".tabs button[data-tab=scan]").click()
+    page.get_by_role("tab", name="Barcode", exact=True).click()
     page.get_by_role("button", name="Scan barcodes").click()
     page.wait_for_function("document.getElementById('bc-list')?.innerText.includes('Vegemite')", timeout=30000)
     print("camera read:", page.locator("#bc-list").inner_text().strip())

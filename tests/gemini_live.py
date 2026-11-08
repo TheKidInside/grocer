@@ -56,12 +56,13 @@ with sync_playwright() as p:
     if photos:
         page.locator("#modal").get_by_role("button", name="Cancel").click()
         page.locator(".tabs button[data-tab=scan]").click()
+        page.get_by_role("tab", name="Receipt", exact=True).click()
         t0 = time.time()
         with page.expect_file_chooser() as fc:
             page.get_by_role("button", name="Choose photos").first.click()
         fc.value.set_files([str(f) for f in photos])
-        page.locator("h2", has_text="Check the receipt").or_(page.locator("h2", has_text="Couldn't read that")).wait_for(timeout=300000)
-        if page.locator("h2", has_text="Couldn't read that").count():
+        page.locator("h1", has_text="Check the receipt").or_(page.locator("h1", has_text="Couldn't read that")).wait_for(timeout=300000)
+        if page.locator("h1", has_text="Couldn't read that").count():
             raise AssertionError("receipt: " + page.locator(".notice").inner_text())
         lines = page.locator(".review-line").count()
         total = page.locator("[data-head=total]").input_value()

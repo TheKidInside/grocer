@@ -36,7 +36,7 @@ Why `start.cmd` instead of double-clicking `index.html`: the app uses ES modules
   DATA + RULES   store.js     the shape of the data, load/save, and the pure rules
                                (is this item low? how much should I buy?)
        │
-  UI             app.js       four tabs rendered from one state object, plus events
+  UI             app.js       five tabs rendered from one state object, plus events
        │
   READERS (lazy) ai.js        shrink a photo; Claude or Qwen read it, return JSON
                  ocr.js       no-AI receipts: read text on the device, rules -> lines
@@ -95,17 +95,20 @@ which feeds the shopping-list estimate and the "Price changes" panel.
 
 ### 2.1 Render = string templates + `innerHTML`
 
-Each tab is a function returning an HTML string (`viewPantry`, `viewList`,
-`viewScan`, `viewSpend`). `render()` picks the current one and assigns it to
-`#view`. Simple and fast enough for hundreds of items.
+Each tab is a function returning an HTML string (`viewHome`, `viewPantry`,
+`viewList`, `viewScan`, `viewSpend`). `render()` picks the current one and assigns
+it to `#view`, and sets `body[data-view]` (the idle Scan tab is `scan-home`, which
+turns the page camera-dark). Simple and fast enough for hundreds of items.
 
 Two consequences you must respect:
 
 - **Escape everything user-typed** with `esc()` before it goes into the string,
   or an item named `<img onerror=...>` would run code.
 - **Re-rendering destroys focus.** So the search box does *not* call `render()`;
-  it calls `refreshPantryList()`, which only replaces the list under it. Same
-  idea on the receipt review: typing in a price updates only `#scan-totals`.
+  it calls `refreshPantryList()`, which only replaces the cards under it (and the
+  counts above them). Same idea on the receipt review: typing in a price updates
+  only `#scan-totals`; ticking the list updates only `#list-progress`
+  (`refreshListProgress`).
 
 ### 2.2 Event delegation
 
@@ -318,17 +321,55 @@ version shows on the **second** load. It only registers on `https:`, so local
 dev on `localhost` always gets fresh files.
 
 ### `app.js`
+- **Home** (`viewHome`, the tab it opens on): this week's spending against the
+  weekly budget (the green card), **Use soon** (anything on hand with a use-by date
+  in the next 7 days, `isSoon`/`soonDays`), and **Running low** (the same items the
+  list shows). The search bar is a button that jumps to the Pantry search.
 - **Pantry**: `viewPantry` -> `pantryList` -> `itemRow`. Grouped by category,
-  filtered by search, location chip and "Low & out only".
-- **List**: `listEntries()` is the derived shopping list. Ticks live in
-  `state.checked` so they survive a reload mid-shop. `restockTicked` adds each
-  ticked item's `need` to the pantry (for when you have no receipt).
-- **Scan**: `pickPhotos` -> `startScan` -> `normalizeReceipt`/`normalizeItems`
-  -> `receiptReview`/`itemsReview` -> `applyScan`. `ui.scan.token` guards
-  against a slow response landing after you pressed Cancel.
-- **Spend**: `viewSpend` builds the month total, 6-month bars, `byCategory`,
-  by-store, `priceWatch`, and the trip list.
-- **Settings**: API key, currency, theme, export/import/erase.
+  filtered by search, the storage segmented control (All + `LOCATIONS`) and two
+  toggle chips ("N to use soon", "N running low"). `itemTag` picks the one
+  coloured word per card in priority order: Out, Expired / Use today / Tomorrow /
+  N days, Low, then a green "N days", "Plenty" or "In stock". The bar under the
+  name is on hand / ideal stock.
+- **List**: `listEntries()` is the derived shopping list, shown as aisles (the
+  pantry categories in order, one-off extras last). Ticks live in
+  `state.checked` so they survive a reload mid-shop. `listProgress` is the card
+  on top: ticked count, the estimate from last prices paid, and how it compares
+  with what is left of this week's budget. Typing "2 lemons" or "500g mince" in the
+  add bar saves the amount as the note (a bare number only before a plural word, so
+  "3 in 1 coffee" stays whole); tap an extra to edit it. The cart card sits on top
+  while it has items, otherwise under the list. `restockTicked` adds each ticked
+  item's `need` to the pantry (for when you have no receipt).
+- **Scan**: idle, the tab is a dark "viewfinder" with mode tabs (`ui.scanMode`:
+  Receipt, Groceries (AI readers only) and Barcode) and the actions for that
+  mode in a sheet below. Then `pickPhotos` -> `startScan` ->
+  `normalizeReceipt`/`normalizeItems` -> `receiptReview`/`itemsReview` ->
+  `applyScan`. `ui.scan.token` guards against a slow response landing after you
+  pressed Cancel.
+- **Spend**: `viewSpend` shows one period (`ui.period` week/month/year, holding the
+  date `ui.anchor`): the total, a comparison with the period before (while the
+  period is still running, only up to the same day, so Wednesday is compared with
+  last Wednesday, not all of last week), `spendChart` (6 weeks, 6 months or 5 years;
+  tap a column to open that period; the budget as a dashed line), `byCategory`,
+  price rises/drops (`priceMoves`), by-store and the trip list. Saving a receipt,
+  checking out a cart or adding a trip moves `ui.anchor` to that trip's date
+  (`setAnchor`); a date in the current period is stored as `null`, meaning "today",
+  so the app left open overnight rolls into the new week by itself.
+- **Periods**: `periodRange(period, date)` gives `[from, to)` as YYYY-MM-DD strings,
+  so "is this trip in the week?" is plain string comparison. Weeks start Monday.
+  `shiftPeriod` steps whole periods.
+- **Budget**: one number, `settings.budget`, per week (0 = none). `budgetFor`
+  scales it to a month (x 52/12) and a year (x 52).
+- **Settings**: readers and keys, currency, weekly budget, theme, export/import/erase.
+  The gear is on Home and on the Scan tab.
+
+### The look (`styles.css`)
+Cream paper (`--bg`), white cards, forest green (`--brand`) for actions, amber
+(`--sun`) for the scan frame and the progress bar on the green card, terracotta
+for "use it now" and price rises. Headings and money use Bricolage Grotesque, the
+rest Inter (both Google Fonts). Every colour is a token on `:root`, redefined for
+dark mode twice: under `prefers-color-scheme: dark` (System) and under
+`[data-theme="dark"]` (the Settings toggle). Change a colour in all three places.
 
 ### `ai.js`
 - Three AI readers share the prompts and schemas; `call()` picks one. Gemini

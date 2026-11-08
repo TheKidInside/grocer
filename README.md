@@ -3,11 +3,12 @@
 A grocery tracker for the phone: know what's in the pantry, what's running low,
 what to buy, and what groceries cost.
 
-- **Pantry** - items with quantity, unit, location, expiry; +/- as you use things.
-- **List** - built automatically from anything low or out, with an estimated cost; add extras by hand.
-- **Cart** (top of the List tab) - in the store, photograph each item with its shelf price tag: Grocer reads the item, price and store, keeps a running total, and ticks the item off the list. Check out saves the trip to the pantry and spending in one go (instead of scanning that trip's receipt).
-- **Scan** - photograph a receipt (restocks the pantry and logs the spend) or groceries themselves (names, counts, sizes, best-before dates). Photos are read by Claude using your own Anthropic API key.
-- **Spend** - monthly total, 6-month trend, by category, by store, and price changes per item.
+- **Home** - this week's grocery spend against your weekly budget, what to use soon, and what is running low.
+- **Pantry** - items with quantity, unit, location, expiry; +/- as you use things; filter by fridge/freezer/pantry, expiring or low.
+- **List** - built automatically from anything low or out, grouped by aisle, with an estimated cost against what is left of the week's budget; add extras by hand ("2 lemons").
+- **Cart** (on the List tab) - in the store, photograph each item with its shelf price tag: Grocer reads the item, price and store, keeps a running total, and ticks the item off the list. Check out saves the trip to the pantry and spending in one go (instead of scanning that trip's receipt).
+- **Scan** (the round button in the middle) - photograph a receipt (restocks the pantry and logs the spend), scan barcodes, or with an AI reader photograph the groceries themselves (names, counts, sizes, best-before dates).
+- **Spend** - week, month or year: total vs the period before, a trend chart with the budget line, by category, price rises and drops, by store, and every trip.
 
 No build step and no server: static files, data stored in the browser.
 

@@ -63,9 +63,22 @@ with sync_playwright() as p:
     page.evaluate("localStorage.clear(); sessionStorage.clear()")
     page.reload()
 
-    # Pantry: empty state -> demo data
+    def tab(name):
+        page.locator(f".tabs button[data-tab={name}]").click()
+
+    def scan_mode(p, name):
+        p.locator(".tabs button[data-tab=scan]").click()
+        p.get_by_role("tab", name=name, exact=True).click()
+
+    # Home: empty state -> demo data
+    check(page.locator("body").get_attribute("data-view") == "home", "opens on Home")
     check(page.get_by_text("Your pantry is empty").is_visible(), "empty state shows")
     page.get_by_role("button", name="Load demo data").click()
+    check(page.get_by_role("heading", name="Running low").is_visible() and page.locator(".hero").is_visible(), "home shows the week card and running low")
+    check(page.locator(".low-card .chip").count() == 3, "home lists the 3 low/out demo items")
+    if SHOTS:
+        page.screenshot(path=str(SHOTS / "home.png"), full_page=True)
+    tab("pantry")
     check(page.locator(".row").count() == 7, "demo loads 7 items")
     bananas = page.locator(".row", has_text="Bananas")
     check(bananas.locator(".pill.out").count() == 1, "bananas marked Out")
@@ -97,7 +110,7 @@ with sync_playwright() as p:
     page.reload()
 
     # Add an item via the modal
-    page.get_by_role("button", name="+ Add item").click()
+    page.get_by_role("button", name="Add item", exact=True).click()
     page.fill("input[name=name]", "Coffee beans")
     page.select_option("select[name=category]", "Drinks")
     page.fill("input[name=qty]", "0")
@@ -108,20 +121,31 @@ with sync_playwright() as p:
     page.locator(".tabs button[data-tab=list]").click()
     badge = page.locator("#list-badge").inner_text()
     check(badge == "4", f"badge shows 4 to buy (got {badge})")
-    check(page.locator("h3", has_text="Out of stock").is_visible(), "out-of-stock section")
+    check(page.locator("h3", has_text="Produce").is_visible() and page.locator("label.row", has_text="Bananas").get_by_text("Out of stock").count() == 1,
+          "list grouped by aisle, out-of-stock noted")
     page.fill("#extra-form input[name=name]", "Birthday candles")
     page.press("#extra-form input[name=name]", "Enter")
     check(page.locator(".row", has_text="Birthday candles").count() == 1, "extra added")
+    page.fill("#extra-form input[name=name]", "2 lemons")
+    page.press("#extra-form input[name=name]", "Enter")
+    lemons = page.locator(".row", has_text="Lemons")
+    check(lemons.locator(".row-name").inner_text() == "Lemons" and lemons.locator(".note").inner_text() == "2", "leading amount becomes the note")
+    lemons.get_by_role("button", name="Remove Lemons").click()
     page.locator("label.row", has_text="Bananas").locator("input").check()
     check(page.locator("label.row.done", has_text="Bananas").count() == 1, "tick strikes bananas")
+    check(page.locator("#list-progress").inner_text().startswith("1 of 5"), f"progress card counts the tick ({page.locator('#list-progress').inner_text()!r})")
     if SHOTS:
         page.screenshot(path=str(SHOTS / "list.png"), full_page=True)
     page.get_by_role("button", name="Restock ticked (1)").click()
     check(page.locator("label.row", has_text="Bananas").count() == 0, "bananas leave the list after restock")
 
     # Scan a receipt (fake AI) -> review -> apply
-    page.locator(".tabs button[data-tab=scan]").click()
-    check(page.get_by_role("button", name="Scan barcodes").is_visible(), "no-AI reader is the default (barcodes offered)")
+    tab("scan")
+    check(page.locator("body").get_attribute("data-view") == "scan-home", "scan tab shows the viewfinder")
+    check(page.get_by_role("tab").all_inner_texts() == ["Receipt", "Barcode"], "no-AI reader is the default (receipt + barcode modes)")
+    page.get_by_role("tab", name="Barcode").click()
+    check(page.get_by_role("button", name="Scan barcodes").is_visible(), "barcode mode offers the scanner")
+    page.get_by_role("tab", name="Receipt").click()
     page.locator("#open-settings").click()
     page.select_option("select[name=provider]", "anthropic")
     page.locator("#modal-body").get_by_role("button", name="Save").click()
@@ -137,6 +161,7 @@ with sync_playwright() as p:
     page.fill("input[name=apiKey]", "sk-ant-test")
     page.select_option("select[name=currency]", "AUD")
     page.locator("#modal-body").get_by_role("button", name="Save").click()
+    check(page.get_by_role("tab").all_inner_texts() == ["Receipt", "Groceries", "Barcode"], "AI reader adds the groceries-photo mode")
     with page.expect_file_chooser() as fc:
         page.get_by_role("button", name="Choose photos").first.click()
     fc.value.set_files({"name": "r.jpg", "mimeType": "image/jpeg", "buffer": b"x"})
@@ -153,14 +178,17 @@ with sync_playwright() as p:
 
     # Spend view after receipt
     page.get_by_text("Test Mart").first.wait_for()
-    check(page.locator(".big").inner_text().replace("A", "").strip().endswith("20.50"), "month total = receipt total")
+    check(page.locator(".big").inner_text().replace("A", "").strip().endswith("20.50"), "week total = receipt total (Spend opens on the receipt's week)")
     check(page.locator(".bar-row", has_text="Adjustments").count() == 1, "adjustments bar present")
     check(page.locator(".row", has_text="Milk").count() == 1, "price change shows for milk")
     page.get_by_role("button", name="Add a trip by hand").click()
     page.fill("input[name=store]", "Market")
     page.fill("input[name=total]", "12")
     page.locator("#modal-body").get_by_role("button", name="Add").click()
+    page.get_by_role("button", name="Month", exact=True).click()
     check("32.50" in page.locator(".big").inner_text(), "manual trip adds to month")
+    page.get_by_role("button", name="Week", exact=True).click()
+    check(page.locator(".chart-col").count() == 6 and page.locator(".chart-budget").count() == 0, "6 weekly columns, no budget line without a budget")
     if SHOTS:
         page.screenshot(path=str(SHOTS / "spend.png"), full_page=True)
 
@@ -171,9 +199,9 @@ with sync_playwright() as p:
     check(page.locator(".row", has_text="Bag").count() == 0, "skipped line not added")
 
     # Items photo in "count" mode
-    page.locator(".tabs button[data-tab=scan]").click()
+    scan_mode(page, "Groceries")
     with page.expect_file_chooser() as fc:
-        page.get_by_role("button", name="Choose photos").nth(1).click()
+        page.get_by_role("button", name="Choose photos").first.click()
     fc.value.set_files({"name": "i.jpg", "mimeType": "image/jpeg", "buffer": b"x"})
     page.get_by_text("Check the groceries").wait_for()
     page.get_by_role("button", name="Save to pantry").click()
@@ -181,9 +209,9 @@ with sync_playwright() as p:
 
     # Renames are remembered: rename on the review screen, then the next scan uses your name
     def scan_items():
-        page.locator(".tabs button[data-tab=scan]").click()
+        scan_mode(page, "Groceries")
         with page.expect_file_chooser() as fc:
-            page.get_by_role("button", name="Choose photos").nth(1).click()
+            page.get_by_role("button", name="Choose photos").first.click()
         fc.value.set_files({"name": "i.jpg", "mimeType": "image/jpeg", "buffer": b"x"})
         page.get_by_text("Check the groceries").wait_for()
     scan_items()
@@ -204,7 +232,7 @@ with sync_playwright() as p:
     # Receipts too, even when the same product is printed differently next time
     def scan_receipt(printed):
         page.evaluate(f"globalThis.__printed = {printed!r}")
-        page.locator(".tabs button[data-tab=scan]").click()
+        scan_mode(page, "Receipt")
         with page.expect_file_chooser() as fc:
             page.get_by_role("button", name="Choose photos").first.click()
         fc.value.set_files({"name": "r.jpg", "mimeType": "image/jpeg", "buffer": b"x"})
@@ -232,9 +260,9 @@ with sync_playwright() as p:
 
     # Count mode: two lines matched to one item add up instead of overwriting
     page.evaluate("globalThis.__count = true")
-    page.locator(".tabs button[data-tab=scan]").click()
+    scan_mode(page, "Groceries")
     with page.expect_file_chooser() as fc:
-        page.get_by_role("button", name="Choose photos").nth(1).click()
+        page.get_by_role("button", name="Choose photos").first.click()
     fc.value.set_files({"name": "i.jpg", "mimeType": "image/jpeg", "buffer": b"x"})
     page.get_by_text("Check the groceries").wait_for()
     page.get_by_role("button", name="Everything on hand (count)").click()
@@ -250,12 +278,24 @@ with sync_playwright() as p:
       return [g.lastPrice, it.lastPrice, S.validDate('2026-02-30'), S.convertQty(2, 'L', 'mL'), S.defaultLow(6, 'pcs')]; }""")
     check(r == [0.012, 0.012, '', 2000, 2], f"price precision, unit change, date + unit rules ({r})")
 
+    # Weekly budget: Home shows what is left, Spend draws the budget line
+    tab("home")
+    page.locator("#open-settings").click()
+    page.fill("input[name=budget]", "100")
+    page.locator("#modal-body").get_by_role("button", name="Save").click()
+    note = page.locator(".hero-note").inner_text()
+    check(page.locator(".hero-bar").count() == 1 and ("left" in note or "over budget" in note), f"home measures the week against the budget ({note!r})")
+    page.get_by_role("button", name="Details", exact=True).click()
+    check(page.locator(".chart-budget").count() == 1, "spend chart shows the budget line")
+
     # Dark theme + persistence across reload
+    tab("home")
     page.locator("#open-settings").click()
     page.locator("[data-act=theme][data-theme=dark]").click()
     page.locator("#modal-body").get_by_role("button", name="Cancel").click()
     page.reload()
     check(page.evaluate("document.documentElement.dataset.theme") == "dark", "dark theme persists")
+    tab("pantry")
     check(page.locator(".row").count() == 10, "data persists after reload")
     if SHOTS:
         page.screenshot(path=str(SHOTS / "pantry-dark.png"), full_page=True)
@@ -328,6 +368,7 @@ with sync_playwright() as p:
     page.fill("#modal input[name=name]", "Bread")
     page.fill("#modal input[name=price]", "80")
     page.get_by_role("button", name="Add to cart").click()
+    tab("home")
     page.locator("#open-settings").click()
     page.once("dialog", lambda d: d.accept())
     page.get_by_role("button", name="Erase everything").click()
@@ -603,6 +644,7 @@ Total Amt Due 1170.60`);
         body = {"status": 1, "product": {"product_name": "Vegemite", "brands": "Bega", "quantity": "380 g", "categories_tags": ["en:spreads", "en:yeast-extract-spreads"]}}             if code == "9300650658516" else {"status": 0}
         route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
     dpage.route("https://world.open*facts.org/**", fake_off)
+    scan_mode(dpage, "Barcode")
     dpage.get_by_role("button", name="Scan barcodes").click()
     for code in ["9300650658516", "9300650658516", "4800361339148"]:
         dpage.fill("#bc-manual", code)
@@ -617,7 +659,7 @@ Total Amt Due 1170.60`);
     dpage.locator("[data-field=name]").nth(1).fill("Pancit canton")
     dpage.get_by_role("button", name="Save to pantry").click()
     check(dpage.locator(".row", has_text="Pancit canton").count() == 1 and dpage.locator(".row", has_text="Vegemite").count() == 1, "barcode items added")
-    dpage.locator(".tabs button[data-tab=scan]").click()
+    scan_mode(dpage, "Barcode")
     dpage.get_by_role("button", name="Scan barcodes").click()
     dpage.fill("#bc-manual", "4800361339148")
     dpage.locator("[data-act=bc-manual]").click()
