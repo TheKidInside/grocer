@@ -331,6 +331,10 @@ dev on `localhost` always gets fresh files.
 - **Settings**: API key, currency, theme, export/import/erase.
 
 ### `ai.js`
+- Three AI readers share the prompts and schemas; `call()` picks one. Gemini
+  (`callGemini`) is a plain `fetch` to the Gemini API with the image inline and
+  `responseJsonSchema` set to the same schema, trying `gemini-3.5-flash` first
+  and the `gemini-flash-latest` alias when that model is busy (503/429) or retired.
 - `prepareImage` draws the photo onto a canvas no larger than 1568 px on the long
   edge and re-encodes it as JPEG. Claude would downscale anything larger anyway,
   so this cuts upload time and cost.

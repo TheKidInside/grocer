@@ -1,5 +1,5 @@
 // Photo reading: shrinks a photo in the browser, sends it with a JSON schema to
-// the chosen reader (Claude via Anthropic, or Qwen on a local llama.cpp server),
+// the chosen reader (Claude via Anthropic, Gemini via Google, or Qwen on a local llama.cpp server),
 // and returns the structured result. Loaded on demand so the rest of the app
 // works offline.
 
@@ -10,6 +10,10 @@ import { RECEIPT_HINT } from './phnames.js';
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.3.0/+esm';
 const MODEL = 'claude-opus-5-5';
 const MAX_EDGE = 1568; // Claude downsizes anything larger, so don't upload it
+// Gemini: 3.5 Flash reads a shelf tag in ~5 s; when it's busy or retired, the
+// newest Flash (Google keeps the alias current; slower when demand is high).
+const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-flash-latest'];
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 export class AIError extends Error {}
 
@@ -165,9 +169,9 @@ ${pantryIndex(items)}`;
 }
 
 function call(settings, images, prompt, schema) {
-  return settings.provider === 'local'
-    ? callLocal(settings.localUrl, images, prompt, schema)
-    : callClaude(settings.apiKey, images, prompt, schema);
+  if (settings.provider === 'local') return callLocal(settings.localUrl, images, prompt, schema);
+  if (settings.provider === 'gemini') return callGemini(settings.geminiKey, images, prompt, schema);
+  return callClaude(settings.apiKey, images, prompt, schema);
 }
 
 function parseJson(text, who) {
@@ -215,6 +219,53 @@ async function callLocal(url, images, prompt, schema) {
   const choice = data.choices?.[0];
   if (choice?.finish_reason === 'length') throw new AIError('The receipt was too long for Qwen in one go. Try splitting it into two scans.');
   return parseJson(choice?.message?.content || '', 'Qwen');
+}
+
+// ---------- Gemini via the Google Gemini API ----------
+
+// Plain fetch, no library: the API takes the image inline and answers in JSON
+// shaped by the same schema the other readers get.
+async function callGemini(apiKey, images, prompt, schema) {
+  if (!apiKey) throw new AIError('Add your Gemini API key in Settings to scan photos.');
+  const body = JSON.stringify({
+    contents: [{
+      parts: [
+        ...images.map((i) => ({ inline_data: { mime_type: 'image/jpeg', data: i.block.source.data } })),
+        { text: prompt },
+      ],
+    }],
+    generationConfig: { responseMimeType: 'application/json', responseJsonSchema: schema, temperature: 0.1 },
+  });
+  let last = '';
+  for (const model of GEMINI_MODELS) {
+    let res;
+    try {
+      res = await fetch(`${GEMINI_URL}/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body,
+      });
+    } catch {
+      throw new AIError('Could not reach Gemini. Check your internet connection.');
+    }
+    if (res.ok) {
+      const data = await res.json();
+      const cand = data.candidates?.[0];
+      if (!cand || data.promptFeedback?.blockReason || cand.finishReason === 'SAFETY') throw new AIError('Gemini declined to read this photo. Try a clearer shot.');
+      if (cand.finishReason === 'MAX_TOKENS') throw new AIError('The receipt was too long to read in one go. Try splitting it into two scans.');
+      return parseJson((cand.content?.parts || []).map((p) => p.text || '').join(''), 'Gemini');
+    }
+    const text = await res.text().catch(() => '');
+    let message = '';
+    try { message = JSON.parse(text).error?.message || ''; } catch { /* not JSON */ }
+    last = message || text.slice(0, 200);
+    // busy, rate-limited or retired: try the next model; anything else is the key or the request
+    if (res.status === 503 || res.status === 429 || res.status === 404 || /no longer available|not found/i.test(message)) continue;
+    if (res.status === 400 && /api key/i.test(message)) throw new AIError('Your Gemini API key was rejected. Check it in Settings.');
+    if (res.status === 401 || res.status === 403) throw new AIError('Your Gemini API key was rejected or isn\'t allowed here. Check it in Settings.');
+    throw new AIError(`Gemini error (${res.status}): ${last}`);
+  }
+  throw new AIError(`Gemini is busy right now. Wait a minute and try again. (${last})`);
 }
 
 // ---------- Claude via the Anthropic API ----------

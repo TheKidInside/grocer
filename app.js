@@ -359,7 +359,7 @@ function refreshCart() {
 function pickCartPhoto(camera) {
   if (ui.scan?.phase === 'loading') { toast('Wait for the receipt being read on the Scan tab'); return; }
   if (!readerReady()) {
-    toast(state.settings.provider === 'local' ? 'Set the Qwen server address first' : 'Add your Anthropic API key first');
+    toast({ local: 'Set the Qwen server address first', gemini: 'Add your Gemini API key first' }[state.settings.provider] || 'Add your Anthropic API key first');
     openSettings();
     return;
   }
@@ -545,6 +545,7 @@ function viewScan() {
   let notice = '';
   if (p === 'local') notice = `<div class="notice">Reading photos with Qwen on this PC (${esc(state.settings.localUrl)}). Start <b>start-qwen</b> first. <a href="#" data-act="settings">Change</a></div>`;
   else if (p === 'anthropic' && !readerReady()) notice = '<div class="notice">Claude needs an Anthropic API key, or switch to reading on this phone. <a href="#" data-act="settings">Open Settings</a>.</div>';
+  else if (p === 'gemini' && !readerReady()) notice = '<div class="notice">Gemini needs a Gemini API key, or switch to reading on this phone. <a href="#" data-act="settings">Open Settings</a>.</div>';
 
   const receipt = p === 'device'
     ? card('Receipt', 'Snap your receipt after shopping. Grocer reads the text right here on your phone, restocks the pantry and logs what you spent. Fix a line once and it remembers it next time. Lay it flat in good light; photograph a long receipt in overlapping parts and choose them together.', photo('receipt', true))
@@ -556,6 +557,7 @@ function viewScan() {
     device: 'Receipts are read on this device and barcodes are looked up in Open Food Facts. No AI service is used.',
     local: 'Photos are read by Qwen running on your own PC: free and private, but only from this computer.',
     anthropic: "Photos are read by Anthropic's Claude using your own API key, about a few cents per scan. Nothing is kept on any server.",
+    gemini: "Photos are read by Google's Gemini using your own API key: about a cent or less per scan, or free within Google's free allowance.",
   }[p] || '';
   return `${notice}<div class="scan-cards">${receipt}${groceries}</div><p class="small muted">${footer}</p>`;
 }
@@ -564,12 +566,13 @@ function readerReady() {
   const p = state.settings.provider;
   if (p === 'local') return !!state.settings.localUrl;
   if (p === 'anthropic') return !!state.settings.apiKey;
+  if (p === 'gemini') return !!state.settings.geminiKey;
   return true;
 }
 
 function pickPhotos(kind, camera) {
   if (!readerReady()) {
-    toast(state.settings.provider === 'local' ? 'Set the Qwen server address first' : 'Add your Anthropic API key first');
+    toast({ local: 'Set the Qwen server address first', gemini: 'Add your Gemini API key first' }[state.settings.provider] || 'Add your Anthropic API key first');
     openSettings();
     return;
   }
@@ -1357,12 +1360,16 @@ function openSettings() {
         <select name="provider">
           ${[['device', 'On this device (no AI) - free, text reading + barcodes'],
     ['anthropic', 'Claude (Anthropic) - smartest, a few cents a scan'],
+    ['gemini', 'Gemini (Google) - fast, a cent or less a scan'],
     ['local', 'Qwen on this PC - free, only on the PC running it']]
     .map(([v, label]) => `<option value="${v}"${st.provider === v ? ' selected' : ''}>${label}</option>`).join('')}
         </select></label>
       <label class="field">Anthropic API key
         <input type="password" name="apiKey" value="${esc(st.apiKey)}" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
         <div class="hint">For Claude. Stored on this device only and sent straight to Anthropic. Get one at console.anthropic.com.</div></label>
+      <label class="field">Gemini API key
+        <input type="password" name="geminiKey" value="${esc(st.geminiKey)}" placeholder="AIza... or AQ...." autocomplete="off" spellcheck="false">
+        <div class="hint">For Gemini. Stored on this device only and sent straight to Google. Get one at aistudio.google.com.</div></label>
       <label class="field">Qwen server address
         <input type="text" name="localUrl" value="${esc(st.localUrl)}" placeholder="http://127.0.0.1:8080" autocomplete="off" spellcheck="false">
         <div class="hint">For Qwen: the llama.cpp server started by start-qwen (needs its vision file).</div></label>
@@ -1379,7 +1386,8 @@ function openSettings() {
     </div>
     <div class="btn-row"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-close>Cancel</button></div>`, (fd) => {
     state.settings.apiKey = String(fd.get('apiKey') || '').trim();
-    state.settings.provider = ['device', 'anthropic', 'local'].includes(fd.get('provider')) ? fd.get('provider') : 'device';
+    state.settings.geminiKey = String(fd.get('geminiKey') || '').trim();
+    state.settings.provider = ['device', 'anthropic', 'gemini', 'local'].includes(fd.get('provider')) ? fd.get('provider') : 'device';
     state.settings.localUrl = String(fd.get('localUrl') || '').trim() || 'http://127.0.0.1:8080';
     state.settings.currency = fd.get('currency');
     commit();

@@ -29,7 +29,7 @@ function empty() {
     barcodes: {},   // barcode -> item id
     packs: {},      // barcode -> quantity one scan adds, in the item's unit
     cart: { store: '', lines: [] }, // shopping in the store: items + shelf prices, saved as one trip at checkout
-    settings: { apiKey: '', provider: 'device', localUrl: 'http://127.0.0.1:8080', currency: guessCurrency(), theme: 'system' },
+    settings: { apiKey: '', geminiKey: '', provider: 'device', localUrl: 'http://127.0.0.1:8080', currency: guessCurrency(), theme: 'system' },
   };
 }
 
