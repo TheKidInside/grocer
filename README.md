@@ -1,4 +1,4 @@
-# Larder
+# Grocer
 
 A grocery tracker for the phone: know what's in the pantry, what's running low,
 what to buy, and what groceries cost.

@@ -1,4 +1,4 @@
-// Larder UI: four tabs (Pantry, List, Scan, Spend) rendered from one state
+// Grocer UI: four tabs (Pantry, List, Scan, Spend) rendered from one state
 // object. Every change goes through commit(), which saves and refreshes the badge.
 
 import * as S from './store.js';
@@ -99,7 +99,7 @@ function viewPantry() {
   if (!state.items.length) {
     return `<div class="empty">
       <h2>Your pantry is empty</h2>
-      <p>Add what you have on hand, or scan your next grocery receipt and Larder fills it in for you.</p>
+      <p>Add what you have on hand, or scan your next grocery receipt and Grocer fills it in for you.</p>
       <div class="btn-row" style="justify-content:center">
         <button class="btn primary" data-act="add-item">Add an item</button>
         <button class="btn" data-act="goto" data-tab="scan">Scan a receipt</button>
@@ -322,10 +322,10 @@ function viewScan() {
   else if (p === 'anthropic' && !readerReady()) notice = '<div class="notice">Claude needs an Anthropic API key, or switch to reading on this phone. <a href="#" data-act="settings">Open Settings</a>.</div>';
 
   const receipt = p === 'device'
-    ? card('Receipt', 'Snap your receipt after shopping. Larder reads the text right here on your phone, restocks the pantry and logs what you spent. Fix a line once and it remembers it next time. Lay it flat in good light; photograph a long receipt in overlapping parts and choose them together.', photo('receipt', true))
-    : card('Receipt', 'Snap your receipt after shopping. Larder reads each line, restocks the pantry and logs what you spent. Long receipt? Photograph it in parts and choose all the photos together.', photo('receipt', true));
+    ? card('Receipt', 'Snap your receipt after shopping. Grocer reads the text right here on your phone, restocks the pantry and logs what you spent. Fix a line once and it remembers it next time. Lay it flat in good light; photograph a long receipt in overlapping parts and choose them together.', photo('receipt', true))
+    : card('Receipt', 'Snap your receipt after shopping. Grocer reads each line, restocks the pantry and logs what you spent. Long receipt? Photograph it in parts and choose all the photos together.', photo('receipt', true));
   const groceries = p === 'device'
-    ? card('Groceries', 'Scan barcodes one after another. Larder looks each up in Open Food Facts, a free product database, and remembers it for next time.', barcodeBtn(true))
+    ? card('Groceries', 'Scan barcodes one after another. Grocer looks each up in Open Food Facts, a free product database, and remembers it for next time.', barcodeBtn(true))
     : card('Groceries', 'Photograph items on the bench, in the fridge or on a shelf, or scan their barcodes one by one.', photo('items', true) + barcodeBtn(false));
   const footer = {
     device: 'Receipts are read on this device and barcodes are looked up in Open Food Facts. No AI service is used.',
@@ -915,7 +915,7 @@ async function openBarcodeScanner() {
           line.notes = `Barcode ${code}`;
           status(p.status === 'error'
             ? `Couldn't reach the product database for ${code} (offline?). Name it on the next screen.`
-            : `${code} isn't in the product database yet. Name it on the next screen and Larder will remember it.`);
+            : `${code} isn't in the product database yet. Name it on the next screen and Grocer will remember it.`);
         }
         drawList();
       }));
@@ -1157,11 +1157,11 @@ function openSettings() {
 
 function exportBackup() {
   const { settings, ...data } = state;
-  const payload = { app: 'larder', version: 1, exportedAt: new Date().toISOString(), currency: settings.currency, ...data };
+  const payload = { app: 'grocer', version: 1, exportedAt: new Date().toISOString(), currency: settings.currency, ...data };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `larder-backup-${S.today()}.json`;
+  a.download = `grocer-backup-${S.today()}.json`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -1179,7 +1179,7 @@ function importBackup() {
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      if (data.app !== 'larder' || !Array.isArray(data.items) || !Array.isArray(data.purchases)) throw new Error('not a Larder backup');
+      if (!['grocer', 'larder'].includes(data.app) || !Array.isArray(data.items) || !Array.isArray(data.purchases)) throw new Error('not a Grocer backup');
       const clean = S.sanitize(data);
       if (!confirm(`Replace this device's data with the backup (${clean.items.length} items, ${clean.purchases.length} trips)?`)) return;
       state = {

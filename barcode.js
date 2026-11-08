@@ -109,7 +109,21 @@ export async function lookupProduct(code) {
   return { status: failed === PRODUCT_DBS.length ? 'error' : 'missing' };
 }
 
+// Open Food Facts caps how often one phone may ask (about 100 products a
+// minute) and answers "429 Too Many Requests" past that - which the browser
+// reports as a failed fetch. So a failed ask waits and tries again, twice.
+const RETRY_MS = [1500, 4000];
 async function lookupIn(host, code) {
+  let r = await lookupOnce(host, code);
+  for (const wait of RETRY_MS) {
+    if (r.status !== 'error' || navigator.onLine === false) break; // offline: no point waiting
+    await new Promise((ok) => setTimeout(ok, wait));
+    r = await lookupOnce(host, code);
+  }
+  return r;
+}
+
+async function lookupOnce(host, code) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8000);
   try {

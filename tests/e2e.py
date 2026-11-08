@@ -1,4 +1,4 @@
-"""End-to-end smoke test for Larder, driven through the real UI.
+"""End-to-end smoke test for Grocer, driven through the real UI.
 
 Claude is never called: ai.js is swapped for a fake module that returns a fixed
 receipt / item list, so the test is free and repeatable.

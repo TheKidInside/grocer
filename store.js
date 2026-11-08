@@ -1,7 +1,7 @@
-// Larder data layer: one JSON blob in localStorage, plus the pure rules
+// Grocer data layer: one JSON blob in localStorage, plus the pure rules
 // (stock status, how much to buy) that every view shares.
 
-const KEY = 'larder.v1';
+const KEY = 'larder.v1'; // the app was called Larder; the key stays so saved data carries over
 
 export const CATEGORIES = [
   'Produce', 'Meat & Seafood', 'Dairy & Eggs', 'Bakery', 'Pantry', 'Frozen',

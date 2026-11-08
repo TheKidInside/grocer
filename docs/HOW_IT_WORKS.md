@@ -1,4 +1,4 @@
-# Larder - How It Works (a learning walkthrough)
+# Grocer - How It Works (a learning walkthrough)
 
 This doc explains **how the grocery tracker is built and why**, then walks the
 code file by file. Read it next to the code; every section names the function it
@@ -260,7 +260,7 @@ read ten thousand Puregold receipts and can say each line out loud.
   then Open Beauty Facts and Open Products Facts for toiletries and household
   goods. Measured on a real Puregold receipt: 33 of its 75 barcodes known. The
   rest come from your own receipts - Puregold prints each item's barcode next
-  to its name, and every saved receipt teaches Larder those barcodes.
+  to its name, and every saved receipt teaches Grocer those barcodes.
 - In app.js, `openBarcodeScanner` collects scans into a list (same code twice =
   qty 2; holding one in view counts once), then hands them to the normal
   groceries review screen. Saving writes `barcodes[code] = item id` and

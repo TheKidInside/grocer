@@ -1,6 +1,6 @@
 {
-  "name": "Larder",
-  "short_name": "Larder",
+  "name": "Grocer",
+  "short_name": "Grocer",
   "description": "Track the pantry, build the shopping list, and see what groceries cost.",
   "start_url": "./",
   "scope": "./",
