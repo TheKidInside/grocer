@@ -36,7 +36,9 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; }
+/* Phone lock (same as Chess Coach): no double-tap zoom, no sideways drag, no overscroll bounce
+   or swipe-back. Pinch zoom is blocked by the viewport tag and a script in <head>. */
+html, body { margin: 0; overflow-x: clip; overscroll-behavior: none; touch-action: manipulation; }
 body {
   background: var(--paper);
   color: var(--ink);
