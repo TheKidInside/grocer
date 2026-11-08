@@ -15,6 +15,12 @@ export function cleanForText(src) {
   return binarize(scaleForText(cropToPaper(straight, 0.02)));
 }
 
+// A shelf tag already cut out (tagprep.js): straighten, then black/white with a
+// wide neighbourhood so the big price digits stay solid instead of hollow.
+export function cleanTag(src) {
+  return binarize(rotate(src, findSkew(src)), 12);
+}
+
 // Receipts are narrow strips photographed on a table: scale the paper to
 // ~1400px wide (thermal print is ~32 characters across), capped at 12 MP.
 function scaleForText(src) {
@@ -172,7 +178,7 @@ function adaptiveInk(g, w, h, r, ratio) {
   return out;
 }
 
-function binarize(src) {
+function binarize(src, radiusDiv = 40) {
   const w = src.width;
   const h = src.height;
   const c = document.createElement('canvas');
@@ -180,7 +186,7 @@ function binarize(src) {
   c.height = h;
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(src, 0, 0);
-  const ink = adaptiveInk(greyOf(ctx, w, h), w, h, Math.max(10, Math.round(w / 40)), 0.92);
+  const ink = adaptiveInk(greyOf(ctx, w, h), w, h, Math.max(10, Math.round(w / radiusDiv)), 0.92);
   const img = ctx.createImageData(w, h);
   for (let i = 0, j = 0; j < ink.length; i += 4, j++) {
     const v = ink[j] ? 0 : 255;

@@ -173,6 +173,9 @@ input[type="text"], input[type="number"], input[type="date"], input[type="passwo
 .review-grid.four { grid-template-columns: 1fr 1fr 1fr 1fr; }
 .receipt-text { font-family: ui-monospace, 'Cascadia Mono', monospace; font-size: 11px; color: var(--muted); margin-top: 4px; }
 .totals { display: flex; justify-content: space-between; gap: 10px; padding-top: 10px; border-top: 2px solid var(--ink); font-size: 14px; }
+.cart { margin-bottom: 16px; }
+.cart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.cart-total { font-size: 22px; font-variant-numeric: tabular-nums; }
 
 /* Spend */
 .month-nav { display: flex; align-items: center; justify-content: space-between; }

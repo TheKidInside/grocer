@@ -140,6 +140,30 @@ ${pantryIndex(items)}`;
   return call(settings, images, prompt, ITEMS_SCHEMA);
 }
 
+const TAG_SCHEMA = obj({
+  store: { type: 'string', description: 'Store name if printed on the tag, else empty' },
+  name: { type: 'string', description: 'Brand, product, variant and pack size of the item, e.g. "Argentina Chicken Luncheon Meat 340g"' },
+  category: { type: 'string', enum: CATEGORIES },
+  price: { type: 'number', description: 'Shelf price for one item, or 0 if no price is readable' },
+  match_id: { type: 'string', description: 'id of the matching pantry item, or empty string' },
+});
+
+// One photo of a product with its shelf price tag, taken while shopping.
+export async function readTag(settings, images, items) {
+  const prompt = `This photo was taken in a grocery store: a product on the shelf and its price tag.
+Identify the product and its shelf price.
+
+Rules:
+- name: the product the tag prices, written out in full: brand, product, variant and pack size. Prefer what the packaging shows; shelf tags are often abbreviated and sometimes wrong. ${RECEIPT_HINT}
+- price: the price for one item as printed on the tag (e.g. "P 120 .00" is 120). If there are several tags, use the one directly under or beside the product in focus.
+- store: the store name if the tag prints one ("PUREGOLD"), else empty.
+- If the product matches an item already in the pantry below, set match_id to its id.
+
+Pantry (id | name | unit | category):
+${pantryIndex(items)}`;
+  return call(settings, images, prompt, TAG_SCHEMA);
+}
+
 function call(settings, images, prompt, schema) {
   return settings.provider === 'local'
     ? callLocal(settings.localUrl, images, prompt, schema)

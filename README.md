@@ -5,6 +5,7 @@ what to buy, and what groceries cost.
 
 - **Pantry** - items with quantity, unit, location, expiry; +/- as you use things.
 - **List** - built automatically from anything low or out, with an estimated cost; add extras by hand.
+- **Cart** (top of the List tab) - in the store, photograph each item with its shelf price tag: Grocer reads the item, price and store, keeps a running total, and ticks the item off the list. Check out saves the trip to the pantry and spending in one go (instead of scanning that trip's receipt).
 - **Scan** - photograph a receipt (restocks the pantry and logs the spend) or groceries themselves (names, counts, sizes, best-before dates). Photos are read by Claude using your own Anthropic API key.
 - **Spend** - monthly total, 6-month trend, by category, by store, and price changes per item.
 

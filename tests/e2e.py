@@ -37,6 +37,9 @@ export async function readItems(key, images, items) {
     { name: 'Peanut butter', brand: 'Bega', size: '375 g', category: 'Pantry', location: 'Pantry', qty: 2, unit: 'pcs', expires: '2027-03-01', match_id: '' },
   ]};
 }
+export async function readTag(key, images, items) {
+  return { store: 'Test Mart', name: 'Argentina Chicken Luncheon Meat 340g', category: 'Pantry', price: 120, match_id: '' };
+}
 """
 
 errors = []
@@ -265,6 +268,64 @@ with sync_playwright() as p:
     page.locator(".tabs button[data-tab=list]").click()
     check(page.evaluate("window.__xss") is None, "hostile id does not execute")
 
+    # ---------- Cart: photo (fake Claude) + by hand, running total, checkout ----------
+    page.evaluate("""localStorage.setItem('larder.v1', JSON.stringify({
+      items: [{ id: 'arg', name: 'Argentina Chicken Luncheon Meat 340g', category: 'Pantry', location: 'Pantry', unit: 'pcs', qty: 0, low: 1, par: 3 },
+              { id: 'chz', name: 'Eden Cheese', category: 'Dairy & Eggs', location: 'Fridge', unit: 'g', qty: 100, low: 0, par: 500 }],
+      purchases: [], settings: { provider: 'anthropic', apiKey: 'sk-ant-test', currency: 'PHP', theme: 'light' } }))""")
+    page.reload()
+    page.locator(".tabs button[data-tab=list]").click()
+    check(page.get_by_role("button", name="Snap item + price").is_visible(), "cart offered on the List tab")
+    with page.expect_file_chooser() as fc:
+        page.get_by_role("button", name="Choose photo", exact=True).click()
+    fc.value.set_files({"name": "tag.jpg", "mimeType": "image/jpeg", "buffer": b"x"})
+    page.get_by_role("heading", name="Add to cart").wait_for()
+    check(page.locator("#modal input[name=price]").input_value() == "120", "tag price read into the form")
+    check(page.locator("#modal select[name=match] option:checked").inner_text() == "Argentina Chicken Luncheon Meat 340g", "tag item matched to the pantry item")
+    check(page.locator("#modal input[name=store]").input_value() == "Test Mart", "store taken from the tag")
+    page.get_by_role("button", name="Add to cart").click()
+    page.get_by_role("button", name="Add by hand").click()
+    page.fill("#modal input[name=name]", "Eggs Dozen")
+    page.fill("#modal input[name=price]", "9.50")
+    page.fill("#modal input[name=qty]", "2")
+    page.get_by_role("button", name="Add to cart").click()
+    page.locator("#cart .row", has_text="Eggs Dozen").locator("[data-act=cart-inc]").click()
+    check(page.locator(".cart-total").inner_text().endswith("148.50"), f"running total 120 + 3 x 9.50 ({page.locator('.cart-total').inner_text()})")
+    check(page.locator("label.row.done", has_text="Argentina").count() == 1, "item in the cart is ticked off the shopping list")
+    # A pack of something the pantry counts in grams: the pack size goes in, not "1 g"
+    page.get_by_role("button", name="Add by hand").click()
+    page.fill("#modal input[name=name]", "Eden Cheese 165g")
+    page.fill("#modal input[name=price]", "60")
+    page.select_option("#modal select[name=match]", "chz")
+    page.get_by_role("button", name="Add to cart").click()
+    page.reload()
+    page.locator(".tabs button[data-tab=list]").click()
+    check(page.locator("#cart .row").count() == 3, "cart survives a reload")
+    page.once("dialog", lambda d: d.accept())
+    page.get_by_role("button", name="Check out").click()
+    page.wait_for_timeout(300)
+    d = page.evaluate("JSON.parse(localStorage.getItem('larder.v1'))")
+    arg = next(i for i in d["items"] if i["id"] == "arg")
+    eggs = next(i for i in d["items"] if i["name"] == "Eggs Dozen")
+    trip = d["purchases"][0]
+    chz = next(i for i in d["items"] if i["id"] == "chz")
+    check(arg["qty"] == 1 and arg["lastPrice"] == 120 and eggs["qty"] == 3 and eggs["lastPrice"] == 9.5, f"checkout restocks the pantry with prices ({arg['qty']}, {eggs['qty']})")
+    check(chz["qty"] == 265 and abs(chz["lastPrice"] - 60 / 165) < 1e-4, f"pack in grams: +165 g at the per-gram price ({chz['qty']}, {chz['lastPrice']})")
+    check(trip["source"] == "cart" and trip["total"] == 208.5 and trip["store"] == "Test Mart" and len(trip["lines"]) == 3, f"checkout logs one trip ({trip['total']})")
+    check(d["cart"]["lines"] == [] and page.locator("#cart .row").count() == 0, "cart empty after checkout")
+    page.locator(".tabs button[data-tab=spend]").click()
+    check(page.locator(".row", has_text="Test Mart").get_by_text("· cart").count() == 1, "trip shows as a cart trip in Spend")
+    # Erase everything empties a cart in progress too
+    page.locator(".tabs button[data-tab=list]").click()
+    page.get_by_role("button", name="Add by hand").click()
+    page.fill("#modal input[name=name]", "Bread")
+    page.fill("#modal input[name=price]", "80")
+    page.get_by_role("button", name="Add to cart").click()
+    page.locator("#open-settings").click()
+    page.once("dialog", lambda d: d.accept())
+    page.get_by_role("button", name="Erase everything").click()
+    check(page.evaluate("JSON.parse(localStorage.getItem('larder.v1')).cart.lines.length") == 0, "erase everything empties the cart")
+
     # Qwen reader: the REAL ai.js talking to a fake OpenAI-compatible server
     qpage = browser.new_page(viewport={"width": 390, "height": 844}, service_workers="block")
     qpage.on("pageerror", lambda e: errors.append(str(e)))
@@ -460,6 +521,19 @@ Total Amt Due 1170.60`);
             ["AMBI PUR CC L2.2MV", 1, 270], ["LM! PASTA M CHZ75G", 1, 24.25], ["MM FRESH MANGOX10S", 1, 95.6]]
     check([l[:3] for l in rough] == want, f"rough phone photo: every line kept, misreads settled ({rough})")
     check(rough[-1][3] and rough[1][3], "unverifiable prices are marked 'check price'")
+
+    # Shelf tags: price row read digit by digit, grouped where the printed gaps are
+    tag = dpage.evaluate("""async () => {
+      const { tagPrice, parseShelfTag } = await import('./ocr.js');
+      return {
+        prices: [tagPrice('P19900', [0, 1, 1, 1, 2, 2]), tagPrice('1P12000', [0, 1, 2, 2, 2, 3, 3]), tagPrice('P4575', [0, 1, 1, 2, 2]), tagPrice('', null)],
+        a: parseShelfTag(['ARGENTINA CHCKN LNCHN MEAT340(', 'PUREGOLD', '09/01/26 1:52 PM', 'P 120 00'].join(String.fromCharCode(10)), '1P12000', [0, 1, 2, 2, 2, 3, 3]),
+        b: parseShelfTag(['ROYAL CRMY TRUFFLE AIN1 PSTKIT', 'PUREGOLD', 'P 199 .00'].join(String.fromCharCode(10)), 'P1990', [0, 1, 1, 1, 2, 2]),
+      };
+    }""")
+    check([x and x["price"] for x in tag["prices"]] == [199, 120, 45.75, None], f"tag prices: gap before the cents, barcode bar ignored ({tag['prices']})")
+    check(tag["a"]["name"] == "Argentina Luncheon Meat Chicken 340g" and tag["a"]["store"] == "Puregold" and tag["a"]["price"] == 120 and not tag["a"]["check"], f"tag parsed: name, store, price ({tag['a']})")
+    check(tag["b"]["name"].startswith("Royal Pasta Kit") and tag["b"]["check"], f"Royal pasta isn't the soft drink; a mismatched read is flagged ({tag['b']})")
     ph = dpage.evaluate("""async () => { const { expandName, fullName } = await import('./phnames.js');
       return { names: ['PF CB210G', 'HNTSPRK BNS230G DP', 'ALASKA COND 545G', 'WKHCAKEW-SYRUP400G', 'DOWNY GARDEN BLOOM 1.4L',
         'CREAMSILK COND STD 180ML', 'LUCKY ME PANCIT CANTON CHILIMANSI 60G', 'MYSKYFLK25GX24S', 'GG TRTI CHESSE 25G'].map(t => expandName(t)?.name),

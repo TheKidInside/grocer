@@ -50,6 +50,102 @@ export async function readReceiptText(images, onProgress) {
   }
 }
 
+// Shelf tags: [{ text: dataURL of the cleaned tag, price: dataURL of its price
+// row or null }] -> [{ text, priceText }]. The price row is read as one line
+// of digits only - the big print confuses the general reader.
+export async function readTagText(tags, onProgress) {
+  cancelReading();
+  const Tesseract = await loadTesseract();
+  let step = 0; // progress over all the tags, not per read
+  const worker = await Tesseract.createWorker('eng', 1, {
+    logger: (m) => { if (m.status === 'recognizing text' && onProgress) onProgress(Math.min(1, step + m.progress / tags.length)); },
+  });
+  active = worker;
+  try {
+    const out = [];
+    for (const [n, t] of tags.entries()) {
+      if (active !== worker) throw new Error('cancelled');
+      step = n / tags.length;
+      await worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '3' });
+      const text = (await worker.recognize(t.text)).data.text;
+      let priceText = '';
+      if (t.price) {
+        await worker.setParameters({ tessedit_char_whitelist: '0123456789P', tessedit_pageseg_mode: '7' });
+        priceText = (await worker.recognize(t.price)).data.text.trim();
+      }
+      out.push({ text, priceText });
+    }
+    return out;
+  } finally {
+    if (active === worker) active = null;
+    worker.terminate().catch(() => {});
+  }
+}
+
+// ---------- shelf tag -> { store, name, price } ----------
+
+// The price from the digits-only read of the price row. groupOf[i] says which
+// gap-separated group the i-th character shape was in (tagprep.findPrice), so
+// "P19900" over groups [₱][199][00] is 199.00 - the gap before the cents is
+// where the printed dot was. Anything before the ₱ (a barcode bar) is ignored.
+// -> { price, sure } | null
+export function tagPrice(priceText, groupOf) {
+  const chars = String(priceText || '').replace(/\s+/g, '');
+  if (groupOf && chars.length === groupOf.length && chars.length) {
+    const groups = [];
+    let afterPeso = !chars.includes('P');
+    for (let i = 0; i < chars.length; i++) {
+      if (chars[i] === 'P') { afterPeso = true; groups.length = 0; continue; }
+      if (!afterPeso || !/\d/.test(chars[i])) continue;
+      if (!groups.length || groupOf[i] !== groupOf[i - 1] || chars[i - 1] === 'P') groups.push('');
+      groups[groups.length - 1] += chars[i];
+    }
+    const p = groups.length >= 2 && groups[groups.length - 1].length === 2 ? Number(`${groups[groups.length - 2]}.${groups[groups.length - 1]}`) : 0;
+    if (p > 0) return { price: p, sure: true };
+    if (groups.length === 1 && groups[0].length <= 4 && Number(groups[0]) > 0) return { price: Number(groups[0]), sure: false };
+  }
+  // Shapes and characters didn't line up: tags print the cents, so the last two
+  // digits after the peso sign are cents.
+  const digits = chars.slice(chars.lastIndexOf('P') + 1).replace(/\D/g, '');
+  const p = digits.length >= 3 && digits.length <= 6 ? Number(`${digits.slice(0, -2)}.${digits.slice(-2)}`) : 0;
+  return p > 0 ? { price: p, sure: false } : null;
+}
+
+// One tag's text (+ its price row read) -> { store, name, printed, price, check }.
+export function parseShelfTag(text, priceText = '', groupOf = null) {
+  const lines = String(text || '').split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const store = knownChain(lines) || '';
+  // The name: the line with the most letters that isn't the store, a date or the price.
+  let printed = '';
+  for (const raw of lines) {
+    // a size cut at the tag's edge: "MEAT340(" / "MEAT340C" is 340G
+    const l = cleanLead(raw).replace(/(\d)[(C]\s*$/, '$1G').replace(/[^A-Za-z0-9]+$/, '');
+    const letters = (l.match(/[a-z]/gi) || []).length;
+    if (letters < 6 || META_RE.test(l) || /\d{1,2}[/.-]\d{1,2}[/.-]\d{2}/.test(l)) continue;
+    if (store && dice(grams(store), grams(l)) >= 0.6) continue;
+    if (letters > (printed.match(/[a-z]/gi) || []).length) printed = l;
+  }
+  const full = printed ? expandName(printed) : null;
+  let found = tagPrice(priceText, groupOf);
+  if (!found) {
+    // last resort: "P 120 00" / "199.00" in the general text - never a barcode,
+    // date or time; a line with the peso sign first; a shelf-sized amount
+    const priced = lines.filter((l) => !/\d{6,}/.test(l) && !/\d{1,2}[/.-]\d{1,2}[/.-]\d{2}|\d{1,2}:\d{2}/.test(l))
+      .map((l) => ({ l, m: l.match(/(\d{1,4})\s*[.,]?\s*(\d{2})\s*$/) }))
+      .filter((x) => x.m && Number(x.m[1]) > 0);
+    const best = priced.find((x) => /[P₱]/.test(x.l)) || priced[0];
+    if (best) found = { price: Number(`${best.m[1]}.${best.m[2]}`), sure: false };
+  }
+  return {
+    store,
+    printed,
+    name: full ? full.name : titleCase(printed),
+    category: full?.category || guessCategory(printed),
+    price: found ? round(found.price, 2) : null,
+    check: !found?.sure,
+  };
+}
+
 // ---------- text -> receipt ----------
 
 const PRICE_RE = /-?\$?(?:\d{1,3}(?:,\d{3})+|\d{1,5})[.,:]\d{2}-?/g;

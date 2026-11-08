@@ -1,8 +1,8 @@
 // Offline support: serve the app shell from cache, refresh it in the background
 // (stale-while-revalidate). Anthropic API calls are never cached.
 
-const CACHE = 'grocer-v9';
-const SHELL = ['./', './index.html', './styles.css', './app.js', './store.js', './ai.js', './ocr.js', './phnames.js', './textprep.js', './barcode.js', './manifest.json', './icon.svg'];
+const CACHE = 'grocer-v10';
+const SHELL = ['./', './index.html', './styles.css', './app.js', './store.js', './ai.js', './ocr.js', './phnames.js', './textprep.js', './tagprep.js', './barcode.js', './manifest.json', './icon.svg'];
 const CACHEABLE_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'cdn.jsdelivr.net'];
 
 self.addEventListener('install', (event) => {

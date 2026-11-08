@@ -257,12 +257,12 @@ function viewList() {
     </form>`;
 
   if (!entries.length && !extras.length) {
-    return `<h2>Shopping list</h2>
+    return `${cartPanel()}<h2>Shopping list</h2>
       <div class="card"><b>Nothing to buy.</b> <span class="muted">Items show up here automatically when they run low in the pantry.</span></div>
       ${extrasHtml}`;
   }
 
-  return `<h2>Shopping list</h2>
+  return `${cartPanel()}<h2>Shopping list</h2>
     <div class="summary"><span><b>${entries.length + extras.length}</b> to buy</span>
       <span>Estimated <b class="money">${money(est)}</b>${unpriced ? ` + ${unpriced} unpriced` : ''}</span></div>
     ${section('Out of stock', entries.filter((e) => S.statusOf(e.item) === 'out'))}
@@ -304,6 +304,231 @@ async function copyList() {
       <div class="btn-row"><button class="btn" type="button" data-close>Close</button></div>`);
     modalForm.querySelector('textarea').select();
   }
+}
+
+// ---------- Cart (shopping in the store) ----------
+// Photograph each item with its shelf price tag as it goes in the trolley; the
+// cart keeps a running total. Checking out saves the trip once: items into the
+// pantry, prices into each item's history, the total into spending - the same
+// as scanning that trip's receipt, so do one or the other.
+
+const cartTotal = () => S.round(sum(state.cart.lines, (l) => l.price * l.qty), 2);
+
+function cartPanel() {
+  const c = state.cart;
+  const buttons = `<div class="btn-row">
+      <button class="btn primary" data-act="cart-photo" data-camera="1">Snap item + price</button>
+      <button class="btn" data-act="cart-photo">Choose photo</button>
+      <button class="btn" data-act="cart-add">Add by hand</button>
+    </div>`;
+  if (!c.lines.length) {
+    return `<div class="card cart" id="cart">
+      <h2 style="margin:0 0 4px">Cart</h2>
+      <p class="muted small" style="margin:0">Shopping now? Photograph each item with its price tag as it goes in the trolley. Grocer keeps a running total; check out to save the trip to your pantry and spending.</p>
+      ${buttons}</div>`;
+  }
+  const count = sum(c.lines, (l) => l.qty);
+  return `<div class="card cart" id="cart">
+    <div class="cart-head"><h2 style="margin:0">Cart</h2><b class="money cart-total">${money(cartTotal())}</b></div>
+    <label class="field" style="margin-top:8px">Store<input type="text" data-cart="store" value="${esc(c.store)}" placeholder="Which store?" autocomplete="off"></label>
+    <div class="rows" style="margin-top:10px">${c.lines.map((l) => `<div class="row">
+      <div class="row-main" role="button" tabindex="0" data-act="cart-edit" data-id="${esc(l.id)}">
+        <div class="row-name">${esc(l.name)}</div>
+        <div class="row-sub"><span class="money">${money(l.price)}</span>${l.qty > 1 ? `<span>x ${l.qty} = <span class="money">${money(l.price * l.qty)}</span></span>` : ''}</div>
+      </div>
+      <div class="qty">
+        <button data-act="cart-dec" data-id="${esc(l.id)}" aria-label="One less ${esc(l.name)}">&minus;</button>
+        <div class="qty-val">${l.qty}</div>
+        <button data-act="cart-inc" data-id="${esc(l.id)}" aria-label="One more ${esc(l.name)}">+</button>
+      </div></div>`).join('')}</div>
+    ${buttons}
+    <div class="btn-row"><button class="btn primary" data-act="cart-checkout">Check out ${money(cartTotal())} (${count} item${count === 1 ? '' : 's'})</button>
+      <button class="btn danger" data-act="cart-clear">Empty cart</button></div>
+  </div>`;
+}
+
+// The cart is part of the List tab; redraw just it, so the list's ticks and the
+// half-typed "add something else" box stay as they are.
+function refreshCart() {
+  const el = document.getElementById('cart');
+  if (el) el.outerHTML = cartPanel();
+  else render();
+  updateBadge();
+}
+
+function pickCartPhoto(camera) {
+  if (ui.scan?.phase === 'loading') { toast('Wait for the receipt being read on the Scan tab'); return; }
+  if (!readerReady()) {
+    toast(state.settings.provider === 'local' ? 'Set the Qwen server address first' : 'Add your Anthropic API key first');
+    openSettings();
+    return;
+  }
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  if (camera) input.capture = 'environment';
+  input.hidden = true;
+  input.addEventListener('change', () => {
+    const file = input.files[0];
+    input.remove();
+    if (file) readCartPhoto(file);
+  });
+  document.body.appendChild(input);
+  input.click();
+}
+
+let tagRead = null; // token of the photo being read; closing the dialog drops its result
+
+async function readCartPhoto(file) {
+  const token = S.uid();
+  tagRead = token;
+  openModal(`<h2>Reading the price tag</h2>
+    <div class="loading"><div class="spinner"></div><span id="tag-progress">${state.settings.provider === 'device' ? 'Finding the tag...' : 'This usually takes 5 to 20 seconds.'}</span></div>
+    <div class="btn-row"><button class="btn" type="button" data-close>Cancel</button></div>`);
+  let read = null;
+  let preview = '';
+  let error = '';
+  try {
+    if (state.settings.provider === 'device') {
+      const tp = await import('./tagprep.js');
+      const r = await tp.readShelfPhoto(file, (f) => {
+        const el = document.getElementById('tag-progress');
+        if (el) el.textContent = `Reading the tag... ${Math.round(f * 100)}%`;
+      });
+      preview = r.preview;
+      read = r;
+    } else {
+      const ai = await import('./ai.js');
+      const img = await ai.prepareImage(file);
+      preview = img.preview;
+      const r = await ai.readTag(state.settings, [img], state.items);
+      read = { store: r.store || '', name: r.name || '', printed: r.name || '', category: r.category, price: r.price > 0 ? r.price : null, check: false, match: validId(r.match_id) };
+    }
+  } catch (err) {
+    error = err?.message || String(err);
+  }
+  if (tagRead !== token) return; // cancelled
+  tagRead = null;
+  const readName = String(read?.name || '').trim();
+  const name = readName ? yourName(readName) : '';
+  // Only a confident match fills the form: the reader's own, the item this tag text
+  // was saved as before, or the exact name. A loose word match ("Milk" inside
+  // "Alaska Condensed Milk") would swap a specific product for a generic one.
+  const hit = read?.match ? { id: read.match } : (findItem(learnedItem(read?.printed || '')) || itemNamed(name) || null);
+  openCartLine({
+    name: hit ? findItem(hit.id).name : name,
+    readName,
+    printed: read?.printed || '',
+    price: read?.price ?? '',
+    qty: 1,
+    match: hit?.id || '',
+    category: pick(CATEGORIES, read?.category, 'Other'),
+    check: !!read?.check,
+    store: read?.store || '',
+  }, { preview, error, unread: !read || (!readName && !read.price) });
+}
+
+// Add (or edit) one cart line. line.id present = editing.
+function openCartLine(line, { preview = '', error = '', unread = false } = {}) {
+  const editing = !!line.id;
+  let note = '';
+  if (error) note = `<div class="notice">Couldn't read that photo: ${esc(error)} Type the item in instead.</div>`;
+  else if (unread) note = '<div class="notice">No price tag found in that photo. Type it in, or retake it closer with the tag in the middle.</div>';
+  else if (!editing && !line.price) note = '<div class="notice">Couldn\'t read the price. Type it in.</div>';
+  else if (!editing && line.check) note = '<div class="notice">Check the price - it was hard to read.</div>';
+  openModal(`<h2>${editing ? 'Edit cart item' : 'Add to cart'}</h2>
+    ${preview ? `<div class="thumbs"><img src="${preview}" alt="Your photo"></div>` : ''}
+    ${note}
+    <div class="stack">
+      <label class="field">Item<input type="text" name="name" value="${esc(line.name)}" required autocomplete="off" placeholder="e.g. Argentina Corned Beef 260g"></label>
+      <div class="grid2">
+        <label class="field">Price each<input type="number" name="price" step="0.01" min="0" inputmode="decimal" value="${line.price === '' ? '' : line.price}" required></label>
+        <label class="field">Qty<input type="number" name="qty" step="1" min="1" inputmode="numeric" value="${line.qty}"></label>
+      </div>
+      <label class="field">Pantry item<select name="match"><option value="">+ New item</option>${sortedItems().map((it) => `<option value="${esc(it.id)}"${it.id === line.match ? ' selected' : ''}>${esc(it.name)}</option>`).join('')}</select>
+        <div class="hint">Restocks this pantry item at checkout. A different product? Pick + New item.</div></label>
+      ${!state.cart.store && !editing ? `<label class="field">Store<input type="text" name="store" value="${esc(line.store || lastStore())}" placeholder="Which store?" autocomplete="off"></label>` : ''}
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" type="submit">${editing ? 'Save' : 'Add to cart'}</button>
+      <button class="btn" type="button" data-close>Cancel</button>
+      ${editing ? `<button class="btn danger" type="button" data-act="cart-remove" data-id="${esc(line.id)}">Remove</button>` : ''}
+    </div>`, (fd) => {
+    const picked = findItem(String(fd.get('match') || ''));
+    let name = String(fd.get('name') || '').trim();
+    const price = S.round(S.num(fd.get('price')), 2);
+    if (!name && picked) name = picked.name;
+    if (!name) { toast('Name the item'); return false; }
+    if (!(price > 0)) { toast('Enter the price'); return false; }
+    // A name you typed over the reader's is used for that product from now on.
+    if (line.readName && name !== line.name) rememberRename(line.readName, name);
+    const fields = {
+      name,
+      price,
+      qty: Math.max(1, Math.round(S.num(fd.get('qty'), 1))),
+      match: picked ? picked.id : '',
+      category: picked ? picked.category : line.category,
+      check: false,
+    };
+    if (editing) Object.assign(state.cart.lines.find((l) => l.id === line.id) || {}, fields);
+    else state.cart.lines.push({ id: S.uid(), printed: line.printed || '', ...fields });
+    const store = String(fd.get('store') || '').trim();
+    if (store && !state.cart.store) state.cart.store = store.slice(0, 60);
+    // On the shopping list? Tick it off.
+    const listKey = picked && S.statusOf(picked) !== 'ok' ? 'item:' + picked.id : '';
+    if (listKey) state.checked[listKey] = true;
+    commit();
+    if (tab !== 'list') setTab('list');
+    else {
+      refreshCart();
+      const box = listKey && view.querySelector(`[data-act="tick"][data-key="${CSS.escape(listKey)}"]`);
+      if (box) { box.checked = true; box.closest('.row').classList.add('done'); }
+    }
+    toast(editing ? 'Saved' : `Added ${name} - cart ${money(cartTotal())}`);
+  });
+}
+
+// The store of the most recent trip, as a starting guess.
+function lastStore() {
+  const p = [...state.purchases].sort((a, b) => (b.date + b.createdAt).localeCompare(a.date + a.createdAt))[0];
+  return p && p.store !== 'Unknown store' ? p.store : '';
+}
+
+function checkoutCart() {
+  const c = state.cart;
+  if (!c.lines.length) return;
+  const total = cartTotal();
+  const store = c.store.trim() || 'Unknown store';
+  if (!confirm(`Check out ${money(total)} at ${store}?\n\nItems go into the pantry and the total into spending. Don't also scan this trip's receipt, or it counts twice.`)) return;
+  const date = S.today();
+  let added = 0;
+  const lines = [];
+  for (const l of c.lines) {
+    let item = findItem(l.match) || itemNamed(l.name);
+    if (!item) {
+      item = S.newItem({ name: l.name, category: l.category, unit: 'pcs', qty: 0, low: S.defaultLow(l.qty, 'pcs'), par: l.qty });
+      state.items.push(item);
+      added++;
+    }
+    // Counted in pcs/packs: add the count. Measured (g, L): add the pack size the
+    // tag or name gives ("MEAT340G"); with no size, add the count and keep no
+    // price - a whole pack's price recorded as the price of 1 g would be nonsense.
+    const countable = S.stepOf(item.unit) === 1;
+    const size = countable ? 1 : S.packQty(l.printed, item.unit) || S.packQty(l.name, item.unit);
+    const qty = size ? S.round(size * l.qty) : l.qty;
+    item.qty = S.round(item.qty + qty);
+    item.updatedAt = Date.now();
+    if (size) S.recordPrice(item, (l.price * l.qty) / qty, date, store);
+    if (l.printed) S.remember(state.aliases, S.aliasKey(l.printed), item.id);
+    delete state.checked['item:' + item.id];
+    lines.push({ name: item.name, itemId: item.id, category: item.category, qty, unit: item.unit, lineTotal: S.round(l.price * l.qty, 2) });
+  }
+  state.purchases.push({ id: S.uid(), date, store, total, lines, source: 'cart', createdAt: Date.now() });
+  state.cart = { store: '', lines: [] };
+  ui.month = date.slice(0, 7);
+  commit();
+  render();
+  toast(`Checked out ${money(total)} at ${store}: ${lines.length} item${lines.length === 1 ? '' : 's'} in the pantry${added ? `, ${added} new` : ''}`);
 }
 
 // ---------- Scan ----------
@@ -536,11 +761,19 @@ function sameReceiptSaved(d) {
     && (p.date === d.date || (d.store && p.store.toLowerCase() === d.store.toLowerCase()))) || null;
 }
 
+// A cart already checked out at this store on the receipt's date: probably the same trip.
+function sameDayCart(d) {
+  const anyStore = (s) => !s || s === 'Unknown store';
+  return state.purchases.find((p) => p.source === 'cart' && p.date === d.date && (anyStore(d.store) || anyStore(p.store) || p.store.toLowerCase() === d.store.toLowerCase())) || null;
+}
+
 function receiptReview(s, thumbs) {
   const d = s.data;
   const already = sameReceiptSaved(d);
+  const cartTrip = already ? null : sameDayCart(d);
   return `<h2>Check the receipt</h2>
     ${already ? `<div class="notice"><b>This receipt looks already saved</b>: ${esc(already.store)}, ${esc(already.date)}, ${money(already.total)}. Saving it again would count the shopping twice; discard unless it really is a second trip.</div>` : ''}
+    ${cartTrip ? `<div class="notice"><b>You checked out a cart</b> at ${esc(cartTrip.store)} on ${esc(cartTrip.date)} (${money(cartTrip.total)}). If this receipt is the same trip, saving it would count the shopping twice.</div>` : ''}
     <p class="muted">Fix anything misread and untick lines that shouldn't go in the pantry (they still count toward the total). Names you change are remembered for next time.</p>
     ${thumbs}
     <div class="card"><div class="grid3">
@@ -1069,7 +1302,7 @@ function viewSpend() {
     ${list.length ? `<div class="rows">${list.map((p) => `<div class="row">
       <div class="row-main" role="button" tabindex="0" data-act="purchase" data-id="${esc(p.id)}">
         <div class="row-name">${esc(p.store)}</div>
-        <div class="row-sub"><span>${esc(p.date)}</span><span>· ${p.lines?.length ? `${p.lines.length} lines` : esc(p.category || 'Manual')}</span>${p.source === 'receipt' ? '<span>· receipt</span>' : ''}</div>
+        <div class="row-sub"><span>${esc(p.date)}</span><span>· ${p.lines?.length ? `${p.lines.length} lines` : esc(p.category || 'Manual')}</span>${p.source === 'receipt' ? '<span>· receipt</span>' : p.source === 'cart' ? '<span>· cart</span>' : ''}</div>
       </div><b class="money">${money(p.total)}</b></div>`).join('')}</div>` : '<p class="muted">No trips logged this month. Scan a receipt, or add one by hand.</p>'}
     <div class="btn-row">
       <button class="btn primary" data-act="goto" data-tab="scan">Scan a receipt</button>
@@ -1079,7 +1312,7 @@ function viewSpend() {
 
 function openPurchase(p) {
   openModal(`<h2>${esc(p.store)}</h2>
-    <p class="muted">${esc(p.date)} · ${p.source === 'receipt' ? 'from receipt' : 'entered by hand'}</p>
+    <p class="muted">${esc(p.date)} · ${{ receipt: 'from receipt', cart: 'checked out from the cart' }[p.source] || 'entered by hand'}</p>
     ${p.lines?.length ? `<div class="rows">${p.lines.map((l) => `<div class="row"><div class="row-main" style="cursor:default">
       <div class="row-name">${esc(l.name)}</div><div class="row-sub">${fq(l.qty)} ${esc(l.unit)} · ${esc(l.category)}</div></div>
       <span class="money">${money(l.lineTotal)}</span></div>`).join('')}</div>` : `<p>${esc(p.category || 'Other')}</p>`}
@@ -1216,7 +1449,11 @@ function closeModal() {
 }
 
 // Closing the dialog any way (button, Esc, backdrop) turns the camera off.
-dialog.addEventListener('close', () => { barcodeSession?.stop(); });
+dialog.addEventListener('close', () => {
+  barcodeSession?.stop();
+  if (tagRead && state.settings.provider === 'device') import('./ocr.js').then((o) => o.cancelReading()); // nobody waits for it
+  tagRead = null;
+});
 
 modalForm.addEventListener('submit', (e) => {
   e.preventDefault();
@@ -1278,6 +1515,28 @@ document.addEventListener('click', (e) => {
     case 'restock': restockTicked(); break;
     case 'copy-list': copyList(); break;
     case 'pick': pickPhotos(el.dataset.kind, el.dataset.camera === '1'); break;
+    case 'cart-photo': pickCartPhoto(el.dataset.camera === '1'); break;
+    case 'cart-add': openCartLine({ name: '', price: '', qty: 1, match: '', category: 'Other', store: '' }); break;
+    case 'cart-edit': { const l = state.cart.lines.find((x) => x.id === id); if (l) openCartLine({ ...l }); break; }
+    case 'cart-inc':
+    case 'cart-dec': {
+      const l = state.cart.lines.find((x) => x.id === id);
+      if (!l) break;
+      if (act === 'cart-inc') l.qty++;
+      else if (l.qty > 1) l.qty--;
+      else if (confirm(`Take ${l.name} out of the cart?`)) state.cart.lines = state.cart.lines.filter((x) => x !== l);
+      commit();
+      refreshCart();
+      break;
+    }
+    case 'cart-remove':
+      state.cart.lines = state.cart.lines.filter((x) => x.id !== id);
+      commit(); closeModal(); refreshCart();
+      break;
+    case 'cart-checkout': checkoutCart(); break;
+    case 'cart-clear':
+      if (confirm('Empty the cart? Nothing is saved.')) { state.cart = { store: '', lines: [] }; commit(); refreshCart(); }
+      break;
     case 'barcodes': openBarcodeScanner(); break;
     case 'bc-manual': {
       const input = document.getElementById('bc-manual');
@@ -1313,7 +1572,7 @@ document.addEventListener('click', (e) => {
     case 'wipe':
       if (confirm('Erase all pantry items, lists and spending on this device? This cannot be undone.')) {
         const settings = state.settings;
-        state = { ...S.load(), items: [], purchases: [], extras: [], checked: {}, aliases: {}, renames: {}, stores: {}, barcodes: {}, packs: {}, settings };
+        state = { ...S.load(), items: [], purchases: [], extras: [], checked: {}, aliases: {}, renames: {}, stores: {}, barcodes: {}, packs: {}, cart: { store: '', lines: [] }, settings };
         commit(); closeModal(); render(); toast('All data erased');
       }
       break;
@@ -1346,6 +1605,7 @@ document.addEventListener('change', (e) => {
 document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.id === 'search') { ui.search = el.value; refreshPantryList(); return; }
+  if (el.dataset.cart === 'store') { state.cart.store = el.value.slice(0, 60); commit(); return; }
   if (el.closest('#view') && (el.dataset.line !== undefined || el.dataset.head) && el.type !== 'checkbox' && el.tagName !== 'SELECT') onScanField(el);
 });
 

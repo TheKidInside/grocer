@@ -28,6 +28,7 @@ function empty() {
     stores: {},     // 'tin:<digits>' / 'h:<header>' -> the store name you confirmed
     barcodes: {},   // barcode -> item id
     packs: {},      // barcode -> quantity one scan adds, in the item's unit
+    cart: { store: '', lines: [] }, // shopping in the store: items + shelf prices, saved as one trip at checkout
     settings: { apiKey: '', provider: 'device', localUrl: 'http://127.0.0.1:8080', currency: guessCurrency(), theme: 'system' },
   };
 }
@@ -80,7 +81,7 @@ export function sanitize(data) {
     store: str(p.store) || 'Unknown store',
     total: round(num(p.total), 2),
     category: CATEGORIES.includes(p.category) ? p.category : undefined,
-    source: p.source === 'receipt' ? 'receipt' : 'manual',
+    source: ['receipt', 'cart'].includes(p.source) ? p.source : 'manual',
     createdAt: num(p.createdAt, Date.now()),
     lines: (Array.isArray(p.lines) ? p.lines : []).filter(isObj).map((l) => ({
       name: str(l.name) || 'Item',
@@ -104,7 +105,20 @@ export function sanitize(data) {
     .filter(([k, v]) => k && typeof v === 'string' && v.trim()).map(([k, v]) => [k, v.trim().slice(0, 120)]));
   const stores = Object.fromEntries(Object.entries(isObj(data?.stores) ? data.stores : {})
     .filter(([k, v]) => k && typeof v === 'string' && v.trim()).map(([k, v]) => [k, v.trim().slice(0, 60)]));
-  return { items, purchases, extras, aliases: table(data?.aliases), renames, stores, barcodes, packs };
+  const c = isObj(data?.cart) ? data.cart : {};
+  const cart = {
+    store: str(c.store).slice(0, 60),
+    lines: (Array.isArray(c.lines) ? c.lines : []).filter(isObj).map((l) => ({
+      id: str(l.id) || uid(),
+      name: str(l.name).slice(0, 120) || 'Item',
+      printed: str(l.printed).slice(0, 120),
+      price: Math.max(0, round(num(l.price), 2)),
+      qty: Math.max(1, Math.round(num(l.qty, 1))),
+      match: ids.has(l.match) ? l.match : '',
+      category: CATEGORIES.includes(l.category) ? l.category : 'Other',
+    })),
+  };
+  return { items, purchases, extras, aliases: table(data?.aliases), renames, stores, barcodes, packs, cart };
 }
 
 export function save(state) {

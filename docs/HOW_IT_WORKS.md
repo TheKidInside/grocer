@@ -251,6 +251,46 @@ read ten thousand Puregold receipts and can say each line out loud.
 - To teach it a new product: add a row to `PRODUCTS` or `BRANDS`, then add the
   receipt line to the "PH receipt names" check in `tests/e2e.py`.
 
+### `tagprep.js` + the cart (shelf-tag photos, no AI)
+
+The cart (`cartPanel`, `openCartLine`, `checkoutCart` in app.js) is a running
+list saved in `state.cart` until checkout, which does what a receipt scan does:
+restock, record each price (`recordPrice`), log one trip (`source: 'cart'`).
+A receipt scanned on the same day at the same store warns that it may be the
+same trip (`sameDayCart`).
+
+Reading a tag photo on the phone (`readShelfPhoto`) is a pipeline, because the
+tag is a small sticker in a busy photo and the text reader can't make sense of
+the whole picture:
+
+1. **Find the tag.** `findBarcodes` looks for a tight block of thin vertical
+   bars (strong left-right brightness changes, few up-down ones, and dozens of
+   dark/light edges along a line across it); the tag is built around it by
+   `tagAroundBarcode` (name above, price to the right). `findTags` also tries
+   white rectangles with print inside, for tags with a blurred barcode. The
+   barcode's *number* is never read or looked up - it's only a landmark.
+2. **Clean it.** `cropTag` cuts it out enlarged; `textprep.cleanTag`
+   straightens it and turns it black/white with a wide neighbourhood so the big
+   digits stay solid.
+3. **Read the price separately.** The price is printed several times taller
+   than the name, which confuses the general reader ("120 .00" came out "10 0").
+   `findPrice` finds the tallest row of digit-shaped blobs and where the gaps
+   are; `cropPrice` redraws each character a little wider with space between
+   (condensed "00" otherwise reads as one 0); `ocr.readTagText` reads that row
+   as one line of digits only. `ocr.tagPrice` then uses the gaps: the group
+   after the last gap is the cents, anything before the peso sign (a barcode
+   bar) is dropped. "P19900" over groups [P][199][00] is 199.00.
+4. **Name and store** come from the general read: `parseShelfTag` takes the
+   line with the most letters (not the store, date or price), fixes a size cut
+   at the edge ("MEAT340(" is 340G) and expands it with `phnames.js`.
+
+Each candidate tag is read and the one with a price and the most name wins.
+On Kevin's two Puregold photos both prices are right in 1-3 s; one name was
+blurry and needed typing once (renames are remembered). Claude/Qwen readers
+use `ai.readTag` instead: one call for name, price and store.
+`tests/shelf_tags.py` measures real photos kept in the git-ignored
+`tests/private/`.
+
 ### `barcode.js` (no-AI groceries)
 - `startScanner` uses the browser's own `BarcodeDetector` where it exists
   (Android Chrome) and the ZXing library otherwise (iPhone Safari, desktop).
