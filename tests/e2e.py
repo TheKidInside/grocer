@@ -80,6 +80,19 @@ with sync_playwright() as p:
     check(page.evaluate("document.activeElement.id") == "search", "search keeps focus")
     page.fill("#search", "")
 
+    # Search ignores apostrophes and & vs "and": "Hunt's Pork & Beans" is found by "hunts pork and beans"
+    page.evaluate("""() => { const d = JSON.parse(localStorage.getItem('larder.v1'));
+      d.items.push({ id: 'hunts', name: "Hunt's Pork & Beans 230g", category: 'Pantry', location: 'Pantry', unit: 'pcs', qty: 2, low: 0, par: 2 });
+      localStorage.setItem('larder.v1', JSON.stringify(d)); }""")
+    page.reload()
+    for q in ["hunts", "Hunts Pork and Beans", "pork beans"]:
+        page.fill("#search", q)
+        check(page.locator("#pantry-list .row-name").all_inner_texts() == ["Hunt's Pork & Beans 230g"], f"search '{q}' finds Hunt's Pork & Beans")
+    page.fill("#search", "")
+    page.evaluate("""() => { const d = JSON.parse(localStorage.getItem('larder.v1'));
+      d.items = d.items.filter((i) => i.id !== 'hunts'); localStorage.setItem('larder.v1', JSON.stringify(d)); }""")
+    page.reload()
+
     # Add an item via the modal
     page.get_by_role("button", name="+ Add item").click()
     page.fill("input[name=name]", "Coffee beans")
@@ -415,6 +428,38 @@ Total Amt Due 788.45`;
     for label in ["inOrder", "reversed", "shuffled", "twice", "again"]:
         check(joined[label] == want, f"overlapping photos ({label}): each line once ({joined[label]})")
     check(joined["total"] == 788.45, "total found whichever photo it is in")
+
+    # Real phone photos (hand on the receipt, table beside it): junk in front of
+    # the quantity, a size that looks like a price inside a name, % for 5, faded
+    # 0s read as 6/8/9, a quantity line with no decimals left. No line may be lost.
+    rough = dpage.evaluate("""async () => {
+      const { parseReceiptText } = await import('./ocr.js');
+      const r = parseReceiptText(`4809922400399 ARGNTN CHKLNCMT340
+Bg 2 x 120.00 249.00 V
+4801668505981 DP ADB S-PNNYHNG A
+- 3x 38.00 124.00 V
+4806516630894 SBESTSHTAKEMSHRM
+= 12 x 38.00 76.08 V
+0750515018488 MYSKYFLK25GX24S
+Coo bl x 141.59 141.50 V
+4809010141279 GSWAN PP ALM3.00S
+of 2X 140.75 281.59 V
+4859010524553 SUGO H S 50G
+A 1x 13.7% 13.7% v
+4902430568364 AMBI PUR CC L2.2MV
+1 x 270.90 279.00 V
+770272660 LM! PASTA M CHZ75G
+724.25 24.25 V
+NH 039739 MM FRESH MANGOX10S
+/ 160 95.60 V
+Total Amt Due 1170.60`);
+      return r.lines.map((l) => [l.printed, l.qty, l.line_total, l.check]);
+    }""")
+    want = [["ARGNTN CHKLNCMT340", 2, 240], ["DP ADB S-PNNYHNG A", 3, 114], ["SBESTSHTAKEMSHRM", 2, 76],
+            ["MYSKYFLK25GX24S", 1, 141.5], ["GSWAN PP ALM3.00S", 2, 281.5], ["SUGO H S 50G", 1, 13.75],
+            ["AMBI PUR CC L2.2MV", 1, 270], ["LM! PASTA M CHZ75G", 1, 24.25], ["MM FRESH MANGOX10S", 1, 95.6]]
+    check([l[:3] for l in rough] == want, f"rough phone photo: every line kept, misreads settled ({rough})")
+    check(rough[-1][3] and rough[1][3], "unverifiable prices are marked 'check price'")
     ph = dpage.evaluate("""async () => { const { expandName, fullName } = await import('./phnames.js');
       return { names: ['PF CB210G', 'HNTSPRK BNS230G DP', 'ALASKA COND 545G', 'WKHCAKEW-SYRUP400G', 'DOWNY GARDEN BLOOM 1.4L',
         'CREAMSILK COND STD 180ML', 'LUCKY ME PANCIT CANTON CHILIMANSI 60G', 'MYSKYFLK25GX24S', 'GG TRTI CHESSE 25G'].map(t => expandName(t)?.name),

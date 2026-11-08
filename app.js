@@ -117,14 +117,18 @@ function viewPantry() {
     <button class="btn primary fab" data-act="add-item">+ Add item</button>`;
 }
 
+// Search text: "Hunt's Pork & Beans" is found by "hunts pork and beans", "pork beans" or "hunt".
+const searchable = (s) => String(s || '').toLowerCase().replace(/['’`]/g, '').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+
 function pantryList() {
-  const q = ui.search.trim().toLowerCase();
+  const q = searchable(ui.search).split(' ').filter((w) => w && w !== 'and');
+  const hit = (i) => { const t = searchable(`${i.name} ${i.notes || ''}`); return q.every((w) => t.includes(w)); };
   const out = state.items.filter((i) => S.statusOf(i) === 'out').length;
   const low = state.items.filter((i) => S.statusOf(i) === 'low').length;
   const summary = `<div class="summary"><span><b>${state.items.length}</b> items</span><span><b>${out}</b> out</span><span><b>${low}</b> running low</span></div>`;
   const items = state.items.filter((i) =>
     (ui.loc === 'All' || i.location === ui.loc)
-    && (!q || i.name.toLowerCase().includes(q) || (i.notes || '').toLowerCase().includes(q))
+    && (!q.length || hit(i))
     && (!ui.lowOnly || S.statusOf(i) !== 'ok'));
   if (!items.length) return summary + '<p class="empty">No items match.</p>';
   const groups = CATEGORIES.map((c) => [c, items.filter((i) => i.category === c).sort((a, b) => a.name.localeCompare(b.name))])

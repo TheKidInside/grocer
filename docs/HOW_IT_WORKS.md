@@ -178,6 +178,17 @@ pantry, list and spend views therefore work offline and never download the SDK.
   money printed twice) to catch digit slips: "11 x" for "1 x", "$2.50" read as
   "32.50", weights, ".89" for ".80". Lines it had to guess are marked "check
   price" on the review screen.
+- **Rough phone photos** (hand on the receipt, table beside it). Under a
+  barcode + name line, the next priced line is always its quantity line, so
+  junk in front of it ("Bg 2 x 120.00", "Coo bl x 141.59") no longer splits the
+  name from its price (`pendingCoded` / `junkLead`). A price inside a word
+  ("ALM3.00S") is a size, not a price; "13.7%" is 13.75. `settleDigits` fixes
+  the commonest thermal-print slip, a faded 0 read as 6/8/9, by comparing two
+  readings of the same number (qty x unit vs total, or the same line in two
+  photos): 270.90 / 279.00 -> 270.00. Photos line up by price *and* name
+  likeness (`alignScore`), so two lines at the same price pair with their own
+  copies whichever photo comes first. On the real 77-line Puregold receipt this
+  took the reader from 62 to 77 lines found, 0 duplicates, in any photo order.
 - The total is the amount the footer repeats (subtotal / amount due / card);
   one much smaller than the items' sum was misread, so the items' sum is used
   and the review screen says so. Store layouts covered by tests: AU style

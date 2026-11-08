@@ -81,8 +81,13 @@ const toNumber = (s) => {
 // The last price on a line, allowing a VAT flag and a few junk characters after
 // it ("148.00 V", "153.75 Vv. <"). -> { label, amount } | null
 function splitPrice(line) {
+  line = line.replace(/(\d[.,]\d)%(?=\s|$)/g, '$15'); // "13.7%" is 13.75: OCR reads a faint 5 as %
   let last = null;
-  for (const m of line.matchAll(PRICE_RE)) last = m;
+  for (const m of line.matchAll(PRICE_RE)) {
+    // inside a word it's a size, not a price ("GSWAN PP ALM3.00S")
+    if (/[a-z]/i.test(line[m.index - 1] || '') && /[a-z]/i.test(line[m.index + m[0].length] || '')) continue;
+    last = m;
+  }
   if (!last) return null;
   const after = line.slice(last.index + last[0].length);
   if (after.length > 8 || (after.match(/[a-z0-9]/gi) || []).length > 3) return null;
@@ -102,6 +107,11 @@ function splitCode(line) {
       const code = t.replace(/\D/g, (c) => LOOKALIKE[c] ?? '');
       return { code: gtinOk(code) ? code : '', name: tokens.slice(i + 1).join(' ') };
     }
+  }
+  // a code cut short at the photo's edge ("NH 039739 MM FRESH MANGO") is still not part of the name
+  for (let i = 0; i < Math.min(tokens.length - 1, 3); i++) {
+    const t = tokens[i];
+    if (t.length >= 5 && (t.match(/\d/g) || []).length / t.length >= 0.8) return { code: '', name: tokens.slice(i + 1).join(' ') };
   }
   return { code: '', name: line };
 }
@@ -138,6 +148,32 @@ function findDate(lines, dayFirst) {
   return '';
 }
 
+// How shop-like a price's cents are: .00/.25/.50/.75 > .x0/.x5 > anything else.
+const tidy = (v) => { const c = Math.round(v * 100) % 100; return c % 25 === 0 ? 2 : c % 5 === 0 ? 1 : 0; };
+const oneDigitApart = (a, b) => {
+  const x = a.toFixed(2);
+  const y = b.toFixed(2);
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let k = 0; k < x.length; k++) if (x[k] !== y[k]) diff++;
+  return diff === 1;
+};
+// Two readings of the same printed number that differ only where a 0 was read
+// as 6, 8 or 9 (thermal print loses the middle of a 0): -> the number with the
+// 0s, e.g. 270.90 / 279.00 -> 270.00. null when they differ any other way.
+function settleDigits(a, b) {
+  const x = a.toFixed(2);
+  const y = b.toFixed(2);
+  if (x === y || x.length !== y.length) return null;
+  let out = '';
+  for (let k = 0; k < x.length; k++) {
+    if (x[k] === y[k]) out += x[k];
+    else if ((x[k] === '0' && '689'.includes(y[k])) || (y[k] === '0' && '689'.includes(x[k]))) out += '0';
+    else return null;
+  }
+  return Number(out);
+}
+
 // "qty x unit price" and the line total are the same money printed twice, so a
 // disagreement means OCR misread one of them:
 //  - total / unit price is a whole number -> the quantity was misread ("11 x" for "1 x");
@@ -155,7 +191,16 @@ function reconcile(qty, unitText, amount, unit = 'pcs', dollar = false) {
   if (unitPrice > 0 && Math.round(ratio) >= 1 && Math.round(ratio) <= 12 && Math.abs(Math.round(ratio) * unitPrice - amount) < 0.011) return { qty: Math.round(ratio), amount, check: false };
   // weighed items: the weight is the likeliest misread; work it out from the price
   if ((unit === 'kg' || unit === 'g') && unitPrice > 0) return { qty: round(amount / unitPrice, 3), amount, check: true };
-  const tidy = (v) => { const c = Math.round(v * 100) % 100; return c % 25 === 0 ? 2 : c % 5 === 0 ? 1 : 0; };
+  // The total is (about) a whole number of units: settle the digits the two
+  // readings disagree on ("2 x 120.00 249.00" -> 240.00; "12 x 38.00 76.08" -> 2 x 76.00).
+  const n = unitPrice > 0 ? Math.round(amount / unitPrice) : 0;
+  if (n >= 1 && n <= 12) {
+    const cand = round(n * unitPrice, 2);
+    const r = settleDigits(cand, amount);
+    if (r !== null) return { qty: n, amount: r, check: false }; // a faded 0, settled
+    // two numbers multiplied (n > 1) agree with each other; one total read once doesn't
+    if (n > 1 && oneDigitApart(cand, amount) && tidy(cand) >= tidy(amount)) return { qty: n, amount: cand, check: true };
+  }
   if (tidy(calc) > tidy(amount)) return { qty, amount: calc, check: true };
   // the total lost leading digits ("0.25" for "80.25"): far below one unit's price
   if (calc > amount && (calc.toFixed(2).endsWith(amount.toFixed(2)) || amount < unitPrice * 0.5)) return { qty, amount: calc, check: true };
@@ -241,6 +286,7 @@ export function parseReceiptText(text, { dayFirst = true, match = () => null } =
   const out = [];
   let footerAt = -1;
   let pending = null; // a name line with no price, waiting for its "1 x 148.00" line
+  let pendingCoded = false; // ...that starts with a product code
 
   for (let li = 0; li < lines.length; li++) {
     const raw = lines[li];
@@ -248,6 +294,7 @@ export function parseReceiptText(text, { dayFirst = true, match = () => null } =
     if (!p) {
       const name = cleanLead(raw);
       pending = /[a-z]{3}/i.test(name) && !IGNORE_RE.test(name) && !META_RE.test(name) ? name : null;
+      pendingCoded = !!pending && splitCode(pending).name !== pending;
       continue;
     }
     const label = cleanLead(p.label);
@@ -267,16 +314,25 @@ export function parseReceiptText(text, { dayFirst = true, match = () => null } =
     // A quantity line starts with the quantity: "1 x 148.00", "2 @ $2.50". OCR
     // sometimes turns "1 x" into letters ("Xk 67.80", "Ll X 34.55"): a line that
     // is a price with at most two stray letters is a quantity line too.
-    const garbled = !q && pending && label.replace(/[^a-z]/gi, '').length <= 2 && /\d+[.,]\d{2}/.test(label);
-    const qtyLine = (!!q && label.slice(0, q.index).replace(/[^a-z]/gi, '').length === 0) || garbled;
+    const garbled = !q && pending && label.replace(/[^a-z]/gi, '').length <= 2;
+    // Fingers and the table beside the paper put junk in front of the quantity
+    // ("Bg 2 x 120.00", "Coo bl x 141.59", "For gL x 86.00"). Under a barcode +
+    // name line (Puregold, SM) the next priced line is always its quantity line,
+    // so one with no real word on it (nothing of 4+ letters) belongs to that name.
+    const junkLead = pending && pendingCoded &&!/[a-z]{4}/i.test(q ? label.slice(0, q.index) : label);
+    const qtyLine = (!!q && label.slice(0, q.index).replace(/[^a-z]/gi, '').length === 0) || garbled || junkLead;
     if (qtyLine && pending) {
       name = pending;
       if (q) {
         unit = q[2] ? q[2].toLowerCase() : 'pcs';
         ({ qty, amount: lineTotal, check } = reconcile(toNumber(q[1]), q[3], amount, unit, q[0].includes('@')));
       } else {
-        const nums = label.match(/\d+[.,]\d{2}/g);
-        ({ qty, amount: lineTotal, check } = reconcile(1, nums[nums.length - 1], amount));
+        // "1 x" was garbled: the last number left is the unit price, if one survived.
+        // "724.25 24.25" is "1x 24.25 24.25" with the x read as a 7, not a lost digit.
+        const unitText = (label.match(/\d+[.,]\d{2}/g) || []).pop();
+        const junkDigit = unitText && unitText.length > amount.toFixed(2).length && unitText.endsWith(amount.toFixed(2));
+        if (unitText && !junkDigit) ({ qty, amount: lineTotal, check } = reconcile(1, unitText, amount));
+        else check = true; // no unit price left to cross-check it with
       }
     } else if (qtyLine) {
       continue; // a quantity line whose name line wasn't read
@@ -381,19 +437,42 @@ function nearPrice(a, b) {
 // Judged on the product as printed, not the expanded name ("Oishi Salted Egg Chips"
 // is longer than "OKI SLT ECGS" but was read no better).
 const quality = (l) => ((l.printed ?? l.name).match(/[a-z]/gi) || []).length + (l.barcode ? 12 : 0) - (l.check ? 4 : 0);
-const better = (x, y) => (quality(y) > quality(x) ? y : x);
+// The same line read in two photos: the clearer name, and the price that
+// cross-checked (or, when neither did, the two readings settled digit by digit).
+function better(x, y) {
+  const keep = quality(y) > quality(x) ? y : x;
+  const other = keep === x ? y : x;
+  if (samePrice(x, y)) return keep.check && !other.check ? { ...keep, check: false } : keep;
+  // a 0 read as 9 in one photo is often a 0 in the other, even when that photo's
+  // "1 x 141.59 141.59" agreed with itself
+  const r = settleDigits(keep.line_total, other.line_total);
+  if (r !== null) return { ...keep, line_total: r, check: false };
+  if (keep.check && !other.check) return { ...keep, qty: other.qty, line_total: other.line_total, check: false };
+  return keep;
+}
 
 // Longest in-order run of equal prices between two photos (like a text diff).
+// A price one digit off only lines up when the names look alike too, or
+// "PUFF 29.25" pairs with "PASTA 24.25" and the real pair is lost.
+// Each pair scores by how alike the two lines are, so when two alignments are
+// equally long the one pairing look-alike names wins, whichever photo is first
+// (two Old Spice lines at 399.00: each pairs with its own copy).
+function alignScore(x, y) {
+  const like = likeness(x, y);
+  if (samePrice(x, y)) return 2 + like;
+  return nearPrice(x, y) && like >= 0.3 ? 1 + like : 0;
+}
 function alignPrices(a, b) {
-  const L = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
+  const L = Array.from({ length: a.length + 1 }, () => new Float64Array(b.length + 1));
+  const W = Array.from({ length: a.length }, (_, i) => b.map((y) => alignScore(a[i], y)));
   for (let i = a.length - 1; i >= 0; i--) {
     for (let j = b.length - 1; j >= 0; j--) {
-      L[i][j] = nearPrice(a[i], b[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+      L[i][j] = Math.max(W[i][j] ? L[i + 1][j + 1] + W[i][j] : 0, L[i + 1][j], L[i][j + 1]);
     }
   }
   const pairs = [];
   for (let i = 0, j = 0; i < a.length && j < b.length;) {
-    if (nearPrice(a[i], b[j]) && L[i][j] === L[i + 1][j + 1] + 1) { pairs.push([i, j]); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) i++; else j++;
+    if (W[i][j] && Math.abs(L[i][j] - (L[i + 1][j + 1] + W[i][j])) < 1e-9) { pairs.push([i, j]); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) i++; else j++;
   }
   return pairs;
 }
